@@ -1,8 +1,8 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  // Turbopack is the default bundler in Next.js 16
-  turbopack: {},
+  // Use webpack for builds (Turbopack has production build issues in Next.js 16)
+  // Dev server still uses Turbopack by default
 };
 
 export default nextConfig;
