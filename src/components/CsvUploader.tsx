@@ -4,7 +4,7 @@ import { useState, useRef, useCallback } from 'react';
 import type { OHLCCandle } from '@/lib/queries';
 
 interface CsvUploaderProps {
-    onDataLoaded: (candles: OHLCCandle[]) => void;
+    onDataLoaded: (candles: OHLCCandle[], fileName?: string) => void;
 }
 
 // Format detectors
@@ -207,7 +207,7 @@ export default function CsvUploader({ onDataLoaded }: CsvUploaderProps) {
 
                 setRowCount(candles.length);
                 setStatus(`✓ Loaded ${candles.length.toLocaleString()} candles from "${file.name}"`);
-                onDataLoaded(candles);
+                onDataLoaded(candles, file.name.replace(/\.[^/.]+$/, ''));
             } catch (err) {
                 setStatus(`Error: ${(err as Error).message}`);
             } finally {

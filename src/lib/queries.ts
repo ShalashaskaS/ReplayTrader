@@ -86,10 +86,10 @@ export async function queryAggregatedCandles(
     const result = await conn.query(`
     SELECT
       (timestamp / ${intervalSeconds}) * ${intervalSeconds} AS time,
-      FIRST(open)  AS open,
+      FIRST(open ORDER BY timestamp ASC)  AS open,
       MAX(high)    AS high,
       MIN(low)     AS low,
-      LAST(close)  AS close,
+      LAST(close ORDER BY timestamp ASC)  AS close,
       SUM(volume)  AS volume
     FROM historical_data
     WHERE timestamp <= ${currentTimestamp}
