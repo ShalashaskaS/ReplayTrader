@@ -85,7 +85,7 @@ export async function queryAggregatedCandles(
 ): Promise<OHLCCandle[]> {
     const result = await conn.query(`
     SELECT
-      (timestamp / ${intervalSeconds}) * ${intervalSeconds} AS time,
+      CAST(FLOOR(CAST(timestamp AS DOUBLE) / ${intervalSeconds}) * ${intervalSeconds} AS BIGINT) AS time,
       FIRST(open ORDER BY timestamp ASC)  AS open,
       MAX(high)    AS high,
       MIN(low)     AS low,

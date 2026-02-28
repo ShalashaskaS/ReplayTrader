@@ -11,6 +11,7 @@ import {
     type HistogramData,
     ColorType,
     type Time,
+    type IPriceLine,
 } from 'lightweight-charts';
 import type { OHLCCandle } from '@/lib/queries';
 
@@ -52,8 +53,20 @@ export default function Chart({
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+    const priceLinesRef = useRef<IPriceLine[]>([]);
     const pendingPointRef = useRef<DrawingPoint | null>(null);
-    const [showFitButton, setShowFitButton] = useState(true);
+
+    // Use refs to avoid stale closures in the chart click handler
+    const activeToolRef = useRef(activeDrawingTool);
+    const drawingColorRef = useRef(drawingColor);
+    const onDrawingAddRef = useRef(onDrawingAdd);
+    const sessionIdRef = useRef(sessionId);
+
+    // Keep refs in sync with props
+    useEffect(() => { activeToolRef.current = activeDrawingTool; }, [activeDrawingTool]);
+    useEffect(() => { drawingColorRef.current = drawingColor; }, [drawingColor]);
+    useEffect(() => { onDrawingAddRef.current = onDrawingAdd; }, [onDrawingAdd]);
+    useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
     // Initialize chart once
     useEffect(() => {
@@ -115,9 +128,17 @@ export default function Chart({
         });
         resizeObserver.observe(containerRef.current);
 
-        // Chart click handler for drawings
+        // Chart click handler — uses refs to avoid stale closure
         chart.subscribeClick((param) => {
             if (!param.time || !param.point || !candleSeriesRef.current) return;
+
+            const tool = activeToolRef.current;
+            const color = drawingColorRef.current;
+            const addFn = onDrawingAddRef.current;
+            const sid = sessionIdRef.current;
+
+            if (tool !== 'hline' && tool !== 'trendline') return;
+            if (!addFn) return;
 
             const price = candleSeries.coordinateToPrice(param.point.y);
             if (price === null) return;
@@ -127,22 +148,22 @@ export default function Chart({
                 price: price as number,
             };
 
-            if (activeDrawingTool === 'hline' && onDrawingAdd) {
-                onDrawingAdd({
+            if (tool === 'hline') {
+                addFn({
                     type: 'hline',
                     points: [clickPoint],
-                    color: drawingColor,
-                    sessionId,
+                    color,
+                    sessionId: sid,
                 });
-            } else if (activeDrawingTool === 'trendline' && onDrawingAdd) {
+            } else if (tool === 'trendline') {
                 if (!pendingPointRef.current) {
                     pendingPointRef.current = clickPoint;
                 } else {
-                    onDrawingAdd({
+                    addFn({
                         type: 'trendline',
                         points: [pendingPointRef.current, clickPoint],
-                        color: drawingColor,
-                        sessionId,
+                        color,
+                        sessionId: sid,
                     });
                     pendingPointRef.current = null;
                 }
@@ -156,7 +177,6 @@ export default function Chart({
             candleSeriesRef.current = null;
             volumeSeriesRef.current = null;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Reset pending point when tool changes
@@ -165,7 +185,7 @@ export default function Chart({
     }, [activeDrawingTool]);
 
     // Update data when candles change
-    const updateChart = useCallback(() => {
+    useEffect(() => {
         if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
         if (candles.length === 0) return;
 
@@ -192,42 +212,31 @@ export default function Chart({
         }
     }, [candles, autoFit]);
 
-    useEffect(() => {
-        updateChart();
-    }, [updateChart]);
-
     // Render horizontal lines as price lines
     useEffect(() => {
         if (!candleSeriesRef.current) return;
 
-        // Remove all existing price lines
         const series = candleSeriesRef.current;
-        // We need to track and recreate them
-        const currentDrawings = drawings.filter((d) => d.sessionId === sessionId);
 
-        // Clear all price lines by removing and re-adding
-        // lightweight-charts doesn't have removeAllPriceLines, so we track them
-        const hlines = currentDrawings.filter((d) => d.type === 'hline');
+        // Remove old price lines
+        priceLinesRef.current.forEach((pl) => {
+            try { series.removePriceLine(pl); } catch { /* already removed */ }
+        });
+        priceLinesRef.current = [];
 
-        // Create price lines for horizontal drawings
+        // Create new price lines for hline drawings in this session
+        const hlines = drawings.filter((d) => d.type === 'hline' && d.sessionId === sessionId);
         hlines.forEach((d) => {
-            series.createPriceLine({
+            const pl = series.createPriceLine({
                 price: d.points[0].price,
                 color: d.color,
                 lineWidth: 2,
-                lineStyle: 2, // dashed
+                lineStyle: 2,
                 axisLabelVisible: true,
                 title: '',
             });
+            priceLinesRef.current.push(pl);
         });
-
-        // For trend lines we need markers (simplified approach)
-        // Full trend line primitives would require the plugin API
-
-        return () => {
-            // Remove price lines on cleanup
-            // Note: we recreate on every drawings change
-        };
     }, [drawings, sessionId]);
 
     const handleFitContent = useCallback(() => {
@@ -250,16 +259,14 @@ export default function Chart({
                         : 'default',
                 }}
             />
-            {showFitButton && (
-                <button
-                    className="chart-fit-btn"
-                    onClick={handleFitContent}
-                    title="Fit bars to screen"
-                    id="chart-fit-button"
-                >
-                    ⊞
-                </button>
-            )}
+            <button
+                className="chart-fit-btn"
+                onClick={handleFitContent}
+                title="Fit bars to screen"
+                id="chart-fit-button"
+            >
+                ⊞
+            </button>
         </div>
     );
 }

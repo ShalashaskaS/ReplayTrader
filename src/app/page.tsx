@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import CsvUploader from '@/components/CsvUploader';
 import ReplayControls from '@/components/ReplayControls';
@@ -38,12 +38,17 @@ export default function Home() {
   const [visibleCandles, setVisibleCandles] = useState<OHLCCandle[]>([]);
   const [timeframe, setTimeframe] = useState(60);
   const [isInitializing, setIsInitializing] = useState(false);
-  const [showUploader, setShowUploader] = useState(true);
 
   // Drawing state
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [activeTool, setActiveTool] = useState<'cursor' | 'hline' | 'trendline' | 'eraser'>('cursor');
   const [drawingColor, setDrawingColor] = useState('#f59e0b');
+
+  // Use refs to avoid stale closures in callbacks
+  const replayRef = useRef(replay);
+  const dataSessionsRef = useRef(dataSessions);
+  useEffect(() => { replayRef.current = replay; }, [replay]);
+  useEffect(() => { dataSessionsRef.current = dataSessions; }, [dataSessions]);
 
   // Load drawings from localStorage on mount
   useEffect(() => {
@@ -52,7 +57,7 @@ export default function Home() {
 
   const activeSessionId = dataSessions.activeSessionId ?? 'default';
 
-  // Load DuckDB data when active session changes
+  // Load candles into DuckDB and initialize replay
   const loadSessionIntoDB = useCallback(async (candles: OHLCCandle[]) => {
     setIsInitializing(true);
     try {
@@ -60,34 +65,39 @@ export default function Home() {
       await createHistoricalTable(conn);
       await insertCandles(conn, candles);
       const timestamps = await getAllTimestamps(conn);
-      replay.initialize(timestamps);
+      // Use ref to avoid stale closure on replay.initialize
+      replayRef.current.initialize(timestamps);
     } catch (err) {
       console.error('Failed to initialize DuckDB:', err);
     } finally {
       setIsInitializing(false);
     }
-  }, [replay]);
+  }, []);
 
   // Handle CSV data loaded → create new session
   const handleDataLoaded = useCallback(
     async (candles: OHLCCandle[], fileName?: string) => {
-      const name = fileName || `Dataset ${dataSessions.sessions.length + 1}`;
-      dataSessions.addSession(name, candles);
-      setShowUploader(false);
+      // Use ref to get current sessions count
+      const sessions = dataSessionsRef.current.sessions;
+      const name = fileName || `Dataset ${sessions.length + 1}`;
+      dataSessionsRef.current.addSession(name, candles);
       await loadSessionIntoDB(candles);
     },
-    [dataSessions, loadSessionIntoDB]
+    [loadSessionIntoDB]
   );
 
   // When active session changes, reload its candles into DuckDB
+  const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
+    // Skip the initial mount or when it hasn't actually changed
+    if (dataSessions.activeSessionId === prevSessionIdRef.current) return;
+    prevSessionIdRef.current = dataSessions.activeSessionId;
+
     const session = dataSessions.activeSession;
     if (session && session.candles.length > 0) {
       loadSessionIntoDB(session.candles);
-      setShowUploader(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSessions.activeSessionId]);
+  }, [dataSessions.activeSessionId, dataSessions.activeSession, loadSessionIntoDB]);
 
   const dataLoaded = dataSessions.activeSession !== null && !isInitializing;
 
@@ -130,7 +140,7 @@ export default function Home() {
     const full: Drawing = { ...drawing, id: generateDrawingId() };
     const updated = addDrawingToStore(full);
     setDrawings(updated);
-    setActiveTool('cursor'); // Return to cursor after drawing
+    setActiveTool('cursor');
   }, []);
 
   const handleClearDrawings = useCallback(() => {
@@ -139,20 +149,13 @@ export default function Home() {
   }, [activeSessionId]);
 
   // Tab handlers
-  const handleTabNew = useCallback(() => {
-    setShowUploader(true);
+  const handleTabClose = useCallback((id: string) => {
+    dataSessionsRef.current.removeSession(id);
   }, []);
 
-  const handleTabClose = useCallback((id: string) => {
-    dataSessions.removeSession(id);
-    if (dataSessions.sessions.length <= 1) {
-      setShowUploader(true);
-    }
-  }, [dataSessions]);
-
   const handleTabSelect = useCallback((id: string) => {
-    dataSessions.switchSession(id);
-  }, [dataSessions]);
+    dataSessionsRef.current.switchSession(id);
+  }, []);
 
   // Memoize the context value
   const replayContextValue = useMemo(() => replay, [replay]);
@@ -165,7 +168,7 @@ export default function Home() {
           <div className="app-logo">
             <span className="logo-icon">📈</span>
             <h1>ReplayTrader</h1>
-            <span className="app-version">v0.2.0</span>
+            <span className="app-version">v0.2.1</span>
           </div>
 
           <CsvUploader onDataLoaded={handleDataLoaded} />
@@ -258,7 +261,7 @@ export default function Home() {
             activeSessionId={dataSessions.activeSessionId}
             onSelect={handleTabSelect}
             onClose={handleTabClose}
-            onNew={handleTabNew}
+            onNew={() => {/* CsvUploader is always visible in sidebar */ }}
           />
 
           <div className="chart-area">
