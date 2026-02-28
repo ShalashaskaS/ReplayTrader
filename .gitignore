@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# duckdb wasm assets (copied by postinstall)
+/public/duckdb/
+
+# sample data
+/public/sample_data.csv
+/public/BTCUSDT-*.csv
