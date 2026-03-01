@@ -11,6 +11,7 @@ import {
   useReplayEngine,
   ReplayContext,
 } from '@/lib/replayEngine';
+import type { LogicalRange } from 'lightweight-charts';
 import { useDataSessions } from '@/lib/useDataSessions';
 import { getConnection } from '@/lib/duckdb';
 import {
@@ -45,6 +46,7 @@ const DEFAULT_PANE_TFS: Record<string, number[]> = {
 interface TabSettings {
   splitLayout: string;
   paneTimeframes: number[];
+  paneVisibleRanges: Record<string, LogicalRange>;
 }
 
 export default function Home() {
@@ -52,10 +54,13 @@ export default function Home() {
   const dataSessions = useDataSessions();
   const [isInitializing, setIsInitializing] = useState(false);
 
-  // Per-tab settings (split layout + pane timeframes)
+  // Per-tab settings (split layout + pane timeframes + zoom ranges)
   const tabSettingsRef = useRef<Record<string, TabSettings>>({});
   const [splitLayout, setSplitLayout] = useState('1');
   const [paneTimeframes, setPaneTimeframes] = useState<number[]>([60]);
+
+  // Track scroll zoom levels per pane
+  const paneVisibleRangesRef = useRef<Record<string, LogicalRange>>({});
 
   // Per-pane candle data
   const [paneCandles, setPaneCandles] = useState<Record<number, OHLCCandle[]>>({});
@@ -84,11 +89,14 @@ export default function Home() {
 
   // Save current tab settings before switching
   const saveTabSettings = useCallback(() => {
-    const sid = dataSessionsRef.current.activeSessionId;
-    if (sid) {
-      tabSettingsRef.current[sid] = { splitLayout, paneTimeframes: [...paneTimeframes] };
+    if (dataSessions.activeSessionId) {
+      tabSettingsRef.current[dataSessions.activeSessionId] = {
+        splitLayout,
+        paneTimeframes: [...paneTimeframes],
+        paneVisibleRanges: { ...paneVisibleRangesRef.current },
+      };
     }
-  }, [splitLayout, paneTimeframes]);
+  }, [dataSessions.activeSessionId, splitLayout, paneTimeframes]);
 
   // Handle split layout change — save for current tab
   const handleLayoutChange = useCallback((layout: string) => {
@@ -135,6 +143,7 @@ export default function Home() {
       tabSettingsRef.current[prevSessionIdRef.current] = {
         splitLayout,
         paneTimeframes: [...paneTimeframes],
+        paneVisibleRanges: { ...paneVisibleRangesRef.current },
       };
     }
     prevSessionIdRef.current = dataSessions.activeSessionId;
@@ -144,6 +153,9 @@ export default function Home() {
       const saved = tabSettingsRef.current[dataSessions.activeSessionId];
       setSplitLayout(saved.splitLayout);
       setPaneTimeframes(saved.paneTimeframes);
+      paneVisibleRangesRef.current = { ...saved.paneVisibleRanges };
+    } else {
+      paneVisibleRangesRef.current = {}; // reset for new tab
     }
 
     const session = dataSessions.activeSession;
@@ -318,7 +330,7 @@ export default function Home() {
                     <div className="pane-chart">
                       <Chart
                         candles={paneCandles[idx] || []}
-                        autoFit={true}
+                        autoFit={false}
                         activeDrawingTool={activeTool}
                         drawings={drawings}
                         drawingColor={drawingColor}
@@ -328,6 +340,10 @@ export default function Home() {
                         paneId={paneKey}
                         syncTimestamp={syncSourceRef.current !== paneKey ? syncTime : null}
                         onCrosshairTime={(t) => handleCrosshairTime(paneKey, t)}
+                        initialLogicalRange={paneVisibleRangesRef.current[paneKey]}
+                        onLogicalRangeChange={(range) => {
+                          if (range) paneVisibleRangesRef.current[paneKey] = range;
+                        }}
                       />
                     </div>
                   </div>

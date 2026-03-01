@@ -11,6 +11,7 @@ import {
     type HistogramData,
     ColorType,
     type Time,
+    type LogicalRange,
     type IPriceLine,
 } from 'lightweight-charts';
 import type { OHLCCandle } from '@/lib/queries';
@@ -45,6 +46,8 @@ interface ChartProps {
     syncTimestamp?: number | null;
     onCrosshairTime?: (time: number | null) => void;
     paneId?: string;
+    initialLogicalRange?: LogicalRange | null;
+    onLogicalRangeChange?: (range: LogicalRange | null) => void;
 }
 
 // Helper: distance between point and line segment
@@ -69,6 +72,8 @@ export default function Chart({
     syncTimestamp,
     onCrosshairTime,
     paneId,
+    initialLogicalRange,
+    onLogicalRangeChange,
 }: ChartProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -102,6 +107,8 @@ export default function Chart({
     const drawingsRef = useRef(drawings);
     const onCrosshairTimeRef = useRef(onCrosshairTime);
     const selectedDrawingIdRef = useRef(selectedDrawingId);
+    const onLogicalRangeChangeRef = useRef(onLogicalRangeChange);
+    const isFirstRenderRef = useRef(true);
 
     useEffect(() => { activeToolRef.current = activeDrawingTool; }, [activeDrawingTool]);
     useEffect(() => { drawingColorRef.current = drawingColor; }, [drawingColor]);
@@ -112,6 +119,7 @@ export default function Chart({
     useEffect(() => { drawingsRef.current = drawings; }, [drawings]);
     useEffect(() => { onCrosshairTimeRef.current = onCrosshairTime; }, [onCrosshairTime]);
     useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
+    useEffect(() => { onLogicalRangeChangeRef.current = onLogicalRangeChange; }, [onLogicalRangeChange]);
 
     // Canvas drawing function
     const redrawCanvas = useCallback(() => {
@@ -352,9 +360,14 @@ export default function Chart({
             requestAnimationFrame(redrawCanvas);
         });
 
-        // Redraw canvas on scroll/zoom
+        // Redraw canvas and emit logical range on scroll/zoom
         chart.timeScale().subscribeVisibleTimeRangeChange(() => {
             requestAnimationFrame(redrawCanvas);
+        });
+
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+            const fn = onLogicalRangeChangeRef.current;
+            if (fn) fn(range);
         });
 
         // Click handler for drawings AND selection
@@ -508,17 +521,29 @@ export default function Chart({
         }));
 
         try {
+            // Save current logical range before setting new data
+            const currentRange = chartRef.current?.timeScale().getVisibleLogicalRange();
+
             candleSeriesRef.current.setData(candleData);
             volumeSeriesRef.current.setData(volumeData);
+
+            // Restore logical range OR apply initial logical range OR autoFit on first render
+            if (currentRange) {
+                chartRef.current?.timeScale().setVisibleLogicalRange(currentRange);
+            } else if (isFirstRenderRef.current) {
+                if (initialLogicalRange) {
+                    chartRef.current?.timeScale().setVisibleLogicalRange(initialLogicalRange);
+                } else if (autoFit) {
+                    chartRef.current?.timeScale().fitContent();
+                }
+                isFirstRenderRef.current = false;
+            }
         } catch (e) {
             console.error('Chart setData error:', e);
         }
 
-        if (autoFit && chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-        }
         requestAnimationFrame(redrawCanvas);
-    }, [candles, autoFit, redrawCanvas]);
+    }, [candles, autoFit, initialLogicalRange, redrawCanvas]);
 
     // Render price lines for hlines + redraw canvas for trend/rect
     useEffect(() => {
