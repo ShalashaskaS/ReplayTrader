@@ -19,7 +19,7 @@ export interface ReplayState {
 }
 
 export interface ReplayActions {
-    initialize: (timestamps: number[]) => void;
+    initialize: (timestamps: number[], startIndex?: number) => void;
     stepForward: (n?: number) => void;
     stepBackward: (n?: number) => void;
     play: () => void;
@@ -68,9 +68,10 @@ export function useReplayEngine(): ReplayEngine {
         }
     }, []);
 
-    const initialize = useCallback((ts: number[]) => {
+    const initialize = useCallback((ts: number[], startIndex?: number) => {
         setTimestamps(ts);
-        setCurrentIndex(0);
+        const idx = startIndex !== undefined ? Math.max(0, Math.min(startIndex, ts.length - 1)) : 0;
+        setCurrentIndex(idx);
         setIsPlaying(false);
     }, []);
 

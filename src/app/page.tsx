@@ -57,16 +57,19 @@ export default function Home() {
 
   const activeSessionId = dataSessions.activeSessionId ?? 'default';
 
+  // Track replay index per session so tab switching preserves position
+  const sessionIndexMap = useRef<Record<string, number>>({});
+
   // Load candles into DuckDB and initialize replay
-  const loadSessionIntoDB = useCallback(async (candles: OHLCCandle[]) => {
+  const loadSessionIntoDB = useCallback(async (candles: OHLCCandle[], restoreIndex?: number) => {
     setIsInitializing(true);
     try {
       const conn = await getConnection();
       await createHistoricalTable(conn);
       await insertCandles(conn, candles);
       const timestamps = await getAllTimestamps(conn);
-      // Use ref to avoid stale closure on replay.initialize
-      replayRef.current.initialize(timestamps);
+      // Pass restoreIndex directly to initialize to avoid timing issues
+      replayRef.current.initialize(timestamps, restoreIndex);
     } catch (err) {
       console.error('Failed to initialize DuckDB:', err);
     } finally {
@@ -86,16 +89,25 @@ export default function Home() {
     [loadSessionIntoDB]
   );
 
-  // When active session changes, reload its candles into DuckDB
+  // When active session changes, save old index + reload new session's candles
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    // Skip the initial mount or when it hasn't actually changed
+    // Skip when it hasn't actually changed
     if (dataSessions.activeSessionId === prevSessionIdRef.current) return;
+
+    // Save current replay index for the OLD session before switching
+    if (prevSessionIdRef.current) {
+      sessionIndexMap.current[prevSessionIdRef.current] = replayRef.current.currentIndex;
+    }
     prevSessionIdRef.current = dataSessions.activeSessionId;
 
     const session = dataSessions.activeSession;
     if (session && session.candles.length > 0) {
-      loadSessionIntoDB(session.candles);
+      // Restore saved index for this session (or start at 0)
+      const savedIndex = dataSessions.activeSessionId
+        ? sessionIndexMap.current[dataSessions.activeSessionId] ?? 0
+        : 0;
+      loadSessionIntoDB(session.candles, savedIndex);
     }
   }, [dataSessions.activeSessionId, dataSessions.activeSession, loadSessionIntoDB]);
 

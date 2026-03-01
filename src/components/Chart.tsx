@@ -130,7 +130,7 @@ export default function Chart({
 
         // Chart click handler — uses refs to avoid stale closure
         chart.subscribeClick((param) => {
-            if (!param.time || !param.point || !candleSeriesRef.current) return;
+            if (!param.point || !candleSeriesRef.current) return;
 
             const tool = activeToolRef.current;
             const color = drawingColorRef.current;
@@ -143,19 +143,28 @@ export default function Chart({
             const price = candleSeries.coordinateToPrice(param.point.y);
             if (price === null) return;
 
-            const clickPoint: DrawingPoint = {
-                time: param.time as number,
-                price: price as number,
-            };
+            // For time: use param.time if available, otherwise derive from X coordinate
+            let time = param.time as number | undefined;
+            if (!time) {
+                const coordTime = chart.timeScale().coordinateToTime(param.point.x);
+                if (coordTime !== null) {
+                    time = coordTime as number;
+                }
+            }
 
             if (tool === 'hline') {
+                // Horizontal line only needs price, use time=0 as placeholder
                 addFn({
                     type: 'hline',
-                    points: [clickPoint],
+                    points: [{ time: time || 0, price: price as number }],
                     color,
                     sessionId: sid,
                 });
-            } else if (tool === 'trendline') {
+            } else if (tool === 'trendline' && time) {
+                const clickPoint: DrawingPoint = {
+                    time,
+                    price: price as number,
+                };
                 if (!pendingPointRef.current) {
                     pendingPointRef.current = clickPoint;
                 } else {
