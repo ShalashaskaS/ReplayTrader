@@ -12,13 +12,13 @@ import {
     ColorType,
     type Time,
     type LogicalRange,
+    type Logical,
     type IPriceLine,
 } from 'lightweight-charts';
 import type { OHLCCandle } from '@/lib/queries';
 
 export interface DrawingPoint {
     time: number;
-    logical?: number;
     price: number;
 }
 
@@ -122,6 +122,52 @@ export default function Chart({
     useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
     useEffect(() => { onLogicalRangeChangeRef.current = onLogicalRangeChange; }, [onLogicalRangeChange]);
 
+    // Timeframe-agnostic mathematical extrapolation helpers
+    const getInterval = useCallback(() => {
+        if (candles.length >= 2) {
+            const diff = candles[candles.length - 1].time - candles[candles.length - 2].time;
+            if (diff > 0) return diff;
+        }
+        return 60;
+    }, [candles]);
+
+    const timeToX = useCallback((t: number) => {
+        if (!chartRef.current) return null;
+        const ts = chartRef.current.timeScale();
+        let x = ts.timeToCoordinate(t as Time);
+        if (x !== null) return x;
+        if (candles.length > 0) {
+            const last = candles[candles.length - 1];
+            if (t > last.time) {
+                const interval = getInterval();
+                const bars = (t - last.time) / interval;
+                const logical = (candles.length - 1) + bars;
+                return ts.logicalToCoordinate(logical as Logical);
+            }
+        }
+        return null;
+    }, [candles, getInterval]);
+
+    const xToTime = useCallback((x: number) => {
+        if (!chartRef.current) return null;
+        const ts = chartRef.current.timeScale();
+        let t = ts.coordinateToTime(x);
+        if (t !== null && typeof t === 'number') return t;
+
+        const logical = ts.coordinateToLogical(x);
+        if (logical !== null && candles.length > 0) {
+            const lastIdx = candles.length - 1;
+            if (logical > lastIdx) {
+                const interval = getInterval();
+                const bars = logical - lastIdx;
+                return candles[lastIdx].time + bars * interval;
+            } else if (logical >= 0) {
+                return candles[Math.max(0, Math.floor(logical))].time;
+            }
+        }
+        return null;
+    }, [candles, getInterval]);
+
     // Canvas drawing function
     const redrawCanvas = useCallback(() => {
         const canvas = canvasRef.current;
@@ -152,8 +198,8 @@ export default function Chart({
 
             if (d.type === 'trendline' && d.points.length === 2) {
                 const p1 = d.points[0], p2 = d.points[1];
-                let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
-                let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                let x1 = timeToX(p1.time);
+                let x2 = timeToX(p2.time);
                 const y1 = series.priceToCoordinate(p1.price);
                 const y2 = series.priceToCoordinate(p2.price);
 
@@ -175,8 +221,8 @@ export default function Chart({
                 }
             } else if (d.type === 'rect' && d.points.length === 2) {
                 const p1 = d.points[0], p2 = d.points[1];
-                let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
-                let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                let x1 = timeToX(p1.time);
+                let x2 = timeToX(p2.time);
                 const y1 = series.priceToCoordinate(p1.price);
                 const y2 = series.priceToCoordinate(p2.price);
 
@@ -207,7 +253,7 @@ export default function Chart({
         if (pendingPointRef.current && mousePosRef.current) {
             const tool = activeToolRef.current;
             const pt = pendingPointRef.current;
-            const px1 = pt.logical !== undefined ? timeScale.logicalToCoordinate(pt.logical as any) : timeScale.timeToCoordinate(pt.time as Time);
+            const px1 = timeToX(pt.time);
             const py1 = series.priceToCoordinate(pt.price);
             const px2 = mousePosRef.current.x; // use true mouse coordinate for fluid preview
             const py2 = mousePosRef.current.y;
@@ -244,7 +290,7 @@ export default function Chart({
                 ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
             }
         }
-    }, []);
+    }, [timeToX]);
 
     // Deselect / clear pending on Escape
     useEffect(() => {
@@ -402,8 +448,8 @@ export default function Chart({
                         if (y !== null && Math.abs(py - y) <= HIT_TOLERANCE) { hitId = d.id; break; }
                     } else if (d.type === 'trendline' && d.points.length === 2) {
                         const p1 = d.points[0], p2 = d.points[1];
-                        let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
-                        let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                        let x1 = timeToX(p1.time);
+                        let x2 = timeToX(p2.time);
                         const y1 = candleSeries.priceToCoordinate(p1.price);
                         const y2 = candleSeries.priceToCoordinate(p2.price);
                         if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
@@ -411,8 +457,8 @@ export default function Chart({
                         }
                     } else if (d.type === 'rect' && d.points.length === 2) {
                         const p1 = d.points[0], p2 = d.points[1];
-                        let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
-                        let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                        let x1 = timeToX(p1.time);
+                        let x2 = timeToX(p2.time);
                         const y1 = candleSeries.priceToCoordinate(p1.price);
                         const y2 = candleSeries.priceToCoordinate(p2.price);
                         if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
@@ -439,30 +485,19 @@ export default function Chart({
             const price = candleSeries.coordinateToPrice(param.point.y);
             if (price === null) return;
 
-            // allow drawing beyond data by mapping physical coordinate to logical index
-            const logical = param.logical ?? chart.timeScale().coordinateToLogical(param.point.x);
-            let time = param.time as number | undefined;
-
-            if (!time && logical !== null) {
-                const ct = chart.timeScale().coordinateToTime(param.point.x);
-                if (ct !== null && typeof ct === 'number') {
-                    time = ct;
-                } else {
-                    time = 0; // fallback if true time extrapolation fails
-                }
-            }
-
-            if (logical === null) return; // Completely out of bounds
+            // Use mathematical interpolation to extract timestamp (works in future empty timeline space too)
+            let time = xToTime(param.point.x);
+            if (time === null) return; // Completely out of bounds
 
             if (tool === 'hline') {
                 addFn({
                     type: 'hline',
-                    points: [{ time: time || 0, logical: logical as number, price: price as number }],
+                    points: [{ time, price: price as number }],
                     color, sessionId: sid,
                 });
                 setSelectedDrawingId(null);
-            } else if ((tool === 'trendline' || tool === 'rect') && logical !== null) {
-                const clickPt: DrawingPoint = { time: time || 0, logical: logical as number, price: price as number };
+            } else if (tool === 'trendline' || tool === 'rect') {
+                const clickPt: DrawingPoint = { time, price: price as number };
 
                 if (!pendingPointRef.current) {
                     // Stage 1: Place anchor point
