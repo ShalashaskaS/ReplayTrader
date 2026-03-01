@@ -327,12 +327,12 @@ export default function Chart({
             if (isSyncingRef.current) return;
 
             // Track mouse for live preview
-            if (param.point && param.time) {
+            if (param.point) {
                 const price = candleSeries.coordinateToPrice(param.point.y);
                 if (price !== null) {
                     mousePosRef.current = {
                         x: param.point.x, y: param.point.y,
-                        time: param.time as number, price: price
+                        time: param.time ? (param.time as number) : 0, price: price
                     };
                 }
             } else {
