@@ -39,13 +39,10 @@ interface ChartProps {
     drawings?: Drawing[];
     drawingColor?: string;
     onDrawingAdd?: (drawing: Omit<Drawing, 'id'>) => void;
-    onDrawingRemove?: (id: string) => void;
     sessionId?: string;
-    visibleRange?: { from: number; to: number } | null;
-    onVisibleRangeChange?: (range: { from: number; to: number } | null) => void;
-    syncTime?: number | null; // For crosshair sync across panes
-    onCrosshairMove?: (time: number | null) => void;
-    label?: string; // Timeframe label shown on pane
+    syncTimestamp?: number | null;
+    onCrosshairTime?: (time: number | null) => void;
+    paneId?: string;
 }
 
 export default function Chart({
@@ -56,11 +53,9 @@ export default function Chart({
     drawingColor = '#f59e0b',
     onDrawingAdd,
     sessionId = 'default',
-    visibleRange = null,
-    onVisibleRangeChange,
-    syncTime = null,
-    onCrosshairMove,
-    label,
+    syncTimestamp,
+    onCrosshairTime,
+    paneId,
 }: ChartProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,6 +64,7 @@ export default function Chart({
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const priceLinesRef = useRef<IPriceLine[]>([]);
     const pendingPointRef = useRef<DrawingPoint | null>(null);
+    const isSyncingRef = useRef(false);
 
     // Refs to avoid stale closures
     const activeToolRef = useRef(activeDrawingTool);
@@ -76,16 +72,18 @@ export default function Chart({
     const onDrawingAddRef = useRef(onDrawingAdd);
     const sessionIdRef = useRef(sessionId);
     const drawingsRef = useRef(drawings);
-    const onCrosshairMoveRef = useRef(onCrosshairMove);
+    const onCrosshairTimeRef = useRef(onCrosshairTime);
+    const paneIdRef = useRef(paneId);
 
     useEffect(() => { activeToolRef.current = activeDrawingTool; }, [activeDrawingTool]);
     useEffect(() => { drawingColorRef.current = drawingColor; }, [drawingColor]);
     useEffect(() => { onDrawingAddRef.current = onDrawingAdd; }, [onDrawingAdd]);
     useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
     useEffect(() => { drawingsRef.current = drawings; }, [drawings]);
-    useEffect(() => { onCrosshairMoveRef.current = onCrosshairMove; }, [onCrosshairMove]);
+    useEffect(() => { onCrosshairTimeRef.current = onCrosshairTime; }, [onCrosshairTime]);
+    useEffect(() => { paneIdRef.current = paneId; }, [paneId]);
 
-    // Draw trend lines and rectangles on canvas overlay
+    // Canvas drawing function
     const redrawCanvas = useCallback(() => {
         const canvas = canvasRef.current;
         const chart = chartRef.current;
@@ -95,25 +93,25 @@ export default function Chart({
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        // Match canvas size to container
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * window.devicePixelRatio;
-        canvas.height = rect.height * window.devicePixelRatio;
-        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        const rect = canvas.parentElement?.getBoundingClientRect();
+        if (!rect) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.scale(dpr, dpr);
         ctx.clearRect(0, 0, rect.width, rect.height);
 
         const sid = sessionIdRef.current;
-        const currentDrawings = drawingsRef.current.filter(d => d.sessionId === sid);
-
+        const allDrawings = drawingsRef.current.filter(d => d.sessionId === sid);
         const timeScale = chart.timeScale();
 
-        for (const d of currentDrawings) {
+        for (const d of allDrawings) {
             if (d.type === 'trendline' && d.points.length === 2) {
                 const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
                 const y1 = series.priceToCoordinate(d.points[0].price);
                 const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
                 const y2 = series.priceToCoordinate(d.points[1].price);
-
                 if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
 
                 ctx.beginPath();
@@ -122,27 +120,31 @@ export default function Chart({
                 ctx.moveTo(x1, y1);
                 ctx.lineTo(x2, y2);
                 ctx.stroke();
+
+                // Small circles at endpoints
+                [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = d.color;
+                    ctx.fill();
+                });
             } else if (d.type === 'rect' && d.points.length === 2) {
                 const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
                 const y1 = series.priceToCoordinate(d.points[0].price);
                 const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
                 const y2 = series.priceToCoordinate(d.points[1].price);
-
                 if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
 
-                // Semi-transparent fill
-                const hex = d.color;
-                ctx.fillStyle = hex + '22';
+                ctx.fillStyle = d.color + '22';
                 ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
-
-                // Border
                 ctx.strokeStyle = d.color;
                 ctx.lineWidth = 1.5;
+                ctx.setLineDash([]);
                 ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
             }
         }
 
-        // Draw pending point indicator
+        // Pending point indicator
         if (pendingPointRef.current) {
             const tool = activeToolRef.current;
             if (tool === 'trendline' || tool === 'rect') {
@@ -150,15 +152,18 @@ export default function Chart({
                 const py = series.priceToCoordinate(pendingPointRef.current.price);
                 if (px !== null && py !== null) {
                     ctx.beginPath();
-                    ctx.arc(px, py, 4, 0, Math.PI * 2);
+                    ctx.arc(px, py, 5, 0, Math.PI * 2);
                     ctx.fillStyle = drawingColorRef.current;
                     ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
                 }
             }
         }
     }, []);
 
-    // Initialize chart once
+    // Initialize chart
     useEffect(() => {
         if (!containerRef.current) return;
 
@@ -188,49 +193,43 @@ export default function Chart({
         });
 
         const candleSeries = chart.addSeries(CandlestickSeries, {
-            upColor: '#22c55e',
-            downColor: '#ef4444',
-            borderDownColor: '#ef4444',
-            borderUpColor: '#22c55e',
-            wickDownColor: '#ef4444',
-            wickUpColor: '#22c55e',
+            upColor: '#22c55e', downColor: '#ef4444',
+            borderDownColor: '#ef4444', borderUpColor: '#22c55e',
+            wickDownColor: '#ef4444', wickUpColor: '#22c55e',
         });
 
         const volumeSeries = chart.addSeries(HistogramSeries, {
             priceFormat: { type: 'volume' },
             priceScaleId: '',
         });
-
-        volumeSeries.priceScale().applyOptions({
-            scaleMargins: { top: 0.8, bottom: 0 },
-        });
+        volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
 
         chartRef.current = chart;
         candleSeriesRef.current = candleSeries;
         volumeSeriesRef.current = volumeSeries;
 
-        // Handle resize
         const resizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
                 const { width, height } = entry.contentRect;
                 chart.applyOptions({ width, height });
-                redrawCanvas();
             }
+            requestAnimationFrame(redrawCanvas);
         });
         resizeObserver.observe(containerRef.current);
 
-        // Crosshair sync — emit time on move
+        // Crosshair sync — emit time so other panes can follow
         chart.subscribeCrosshairMove((param) => {
-            const fn = onCrosshairMoveRef.current;
+            if (isSyncingRef.current) return;
+            const fn = onCrosshairTimeRef.current;
             if (fn) {
                 fn(param.time ? (param.time as number) : null);
             }
-            redrawCanvas();
+            requestAnimationFrame(redrawCanvas);
         });
 
-        // Redraw on visible range change (scroll, zoom)
+        // Redraw canvas on scroll/zoom
         chart.timeScale().subscribeVisibleTimeRangeChange(() => {
-            redrawCanvas();
+            requestAnimationFrame(redrawCanvas);
         });
 
         // Click handler for drawings
@@ -250,30 +249,30 @@ export default function Chart({
 
             let time = param.time as number | undefined;
             if (!time) {
-                const coordTime = chart.timeScale().coordinateToTime(param.point.x);
-                if (coordTime !== null) time = coordTime as number;
+                const ct = chart.timeScale().coordinateToTime(param.point.x);
+                if (ct !== null) time = ct as number;
             }
 
             if (tool === 'hline') {
                 addFn({
                     type: 'hline',
                     points: [{ time: time || 0, price: price as number }],
-                    color,
-                    sessionId: sid,
+                    color, sessionId: sid,
                 });
+                // Don't switch to cursor — keep tool active
             } else if ((tool === 'trendline' || tool === 'rect') && time) {
-                const clickPoint: DrawingPoint = { time, price: price as number };
+                const pt: DrawingPoint = { time, price: price as number };
                 if (!pendingPointRef.current) {
-                    pendingPointRef.current = clickPoint;
-                    redrawCanvas();
+                    pendingPointRef.current = pt;
+                    requestAnimationFrame(redrawCanvas);
                 } else {
                     addFn({
                         type: tool,
-                        points: [pendingPointRef.current, clickPoint],
-                        color,
-                        sessionId: sid,
+                        points: [pendingPointRef.current, pt],
+                        color, sessionId: sid,
                     });
                     pendingPointRef.current = null;
+                    // Keep tool active for next drawing
                 }
             }
         });
@@ -288,41 +287,48 @@ export default function Chart({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Reset pending point when tool changes
+    // Reset pending point on tool change
     useEffect(() => {
         pendingPointRef.current = null;
         redrawCanvas();
     }, [activeDrawingTool, redrawCanvas]);
 
-    // Update data when candles change — with deduplication and validation
+    // Sync crosshair from other panes
+    useEffect(() => {
+        if (!chartRef.current || !candleSeriesRef.current) return;
+        if (syncTimestamp === null || syncTimestamp === undefined) return;
+
+        isSyncingRef.current = true;
+        try {
+            chartRef.current.setCrosshairPosition(
+                0, // will show vertical line at time
+                syncTimestamp as Time,
+                candleSeriesRef.current
+            );
+        } catch { /* ignore if time not in range */ }
+        isSyncingRef.current = false;
+    }, [syncTimestamp]);
+
+    // Update data with deduplication
     useEffect(() => {
         if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
         if (candles.length === 0) return;
 
-        // Deduplicate by time (keep last occurrence) and validate
         const seen = new Map<number, OHLCCandle>();
         for (const c of candles) {
             if (!isFinite(c.time) || !isFinite(c.open) || !isFinite(c.high) ||
-                !isFinite(c.low) || !isFinite(c.close) || c.time <= 0) {
-                continue;
-            }
+                !isFinite(c.low) || !isFinite(c.close) || c.time <= 0) continue;
             seen.set(c.time, c);
         }
 
         const deduped = Array.from(seen.values()).sort((a, b) => a.time - b.time);
         if (deduped.length === 0) return;
 
-        const candleData: CandlestickData<Time>[] = deduped.map((c) => ({
-            time: c.time as Time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
+        const candleData: CandlestickData<Time>[] = deduped.map(c => ({
+            time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close,
         }));
-
-        const volumeData: HistogramData<Time>[] = deduped.map((c) => ({
-            time: c.time as Time,
-            value: c.volume || 0,
+        const volumeData: HistogramData<Time>[] = deduped.map(c => ({
+            time: c.time as Time, value: c.volume || 0,
             color: c.close >= c.open ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)',
         }));
 
@@ -333,101 +339,59 @@ export default function Chart({
             console.error('Chart setData error:', e);
         }
 
-        if (visibleRange && chartRef.current) {
-            try {
-                chartRef.current.timeScale().setVisibleRange({
-                    from: visibleRange.from as Time,
-                    to: visibleRange.to as Time,
-                });
-            } catch {
-                chartRef.current.timeScale().fitContent();
-            }
-        } else if (autoFit && chartRef.current) {
+        if (autoFit && chartRef.current) {
             chartRef.current.timeScale().fitContent();
         }
+        requestAnimationFrame(redrawCanvas);
+    }, [candles, autoFit, redrawCanvas]);
 
-        // Redraw canvas overlays after data update
-        setTimeout(redrawCanvas, 50);
-    }, [candles, autoFit, visibleRange, redrawCanvas]);
-
-    // Render hlines as price lines
+    // Render price lines for hlines + redraw canvas for trend/rect
     useEffect(() => {
         if (!candleSeriesRef.current) return;
         const series = candleSeriesRef.current;
 
-        priceLinesRef.current.forEach((pl) => {
+        priceLinesRef.current.forEach(pl => {
             try { series.removePriceLine(pl); } catch { /* ok */ }
         });
         priceLinesRef.current = [];
 
-        const hlines = drawings.filter((d) => d.type === 'hline' && d.sessionId === sessionId);
-        hlines.forEach((d) => {
+        const hlines = drawings.filter(d => d.type === 'hline' && d.sessionId === sessionId);
+        hlines.forEach(d => {
             const pl = series.createPriceLine({
-                price: d.points[0].price,
-                color: d.color,
-                lineWidth: 2,
-                lineStyle: 2,
-                axisLabelVisible: true,
-                title: '',
+                price: d.points[0].price, color: d.color,
+                lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '',
             });
             priceLinesRef.current.push(pl);
         });
 
-        // Redraw canvas for trend lines and rects
-        setTimeout(redrawCanvas, 50);
+        // Always redraw canvas for trend lines and rects
+        requestAnimationFrame(redrawCanvas);
     }, [drawings, sessionId, redrawCanvas]);
 
-    // Sync crosshair from another pane
-    useEffect(() => {
-        if (!chartRef.current || !candleSeriesRef.current || syncTime === null || syncTime === undefined) return;
-        // We don't call setCrosshairPosition because it's tricky
-        // Instead rely on the shared time-axis approach
-    }, [syncTime]);
-
     const handleFitContent = useCallback(() => {
-        if (chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-        }
+        chartRef.current?.timeScale().fitContent();
     }, []);
 
-    const toolsWithCrosshair = ['hline', 'trendline', 'rect'];
+    const isDrawing = activeDrawingTool === 'hline' || activeDrawingTool === 'trendline' || activeDrawingTool === 'rect';
 
     return (
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-            {label && (
-                <div className="chart-pane-label">{label}</div>
-            )}
             <div
                 ref={containerRef}
-                id="chart-container"
                 style={{
-                    width: '100%',
-                    height: '100%',
-                    minHeight: '200px',
-                    cursor: toolsWithCrosshair.includes(activeDrawingTool || '')
-                        ? 'crosshair'
-                        : 'default',
+                    width: '100%', height: '100%', minHeight: '150px',
+                    cursor: isDrawing ? 'crosshair' : 'default',
                 }}
             />
             <canvas
                 ref={canvasRef}
                 style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: '100%',
-                    pointerEvents: 'none',
-                    zIndex: 5,
+                    position: 'absolute', top: 0, left: 0,
+                    width: '100%', height: '100%',
+                    pointerEvents: 'none', zIndex: 5,
                 }}
             />
-            <button
-                className="chart-fit-btn"
-                onClick={handleFitContent}
-                title="Fit bars to screen"
-            >
-                ⊞
-            </button>
+            <button className="chart-fit-btn" onClick={handleFitContent} title="Fit to screen">⊞</button>
         </div>
     );
 }

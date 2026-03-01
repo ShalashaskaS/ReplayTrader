@@ -35,21 +35,33 @@ const TIMEFRAME_LABELS: Record<number, string> = {
   60: '1m', 300: '5m', 900: '15m', 3600: '1H', 14400: '4H', 86400: '1D',
 };
 
-const DEFAULT_PANE_TIMEFRAMES: Record<string, number[]> = {
+const DEFAULT_PANE_TFS: Record<string, number[]> = {
   '1': [60],
   '1x2': [60, 300],
   '2x2': [60, 300, 3600, 86400],
 };
 
+interface TabSettings {
+  splitLayout: string;
+  paneTimeframes: number[];
+}
+
 export default function Home() {
   const replay = useReplayEngine();
   const dataSessions = useDataSessions();
   const [isInitializing, setIsInitializing] = useState(false);
-  const [splitLayout, setSplitLayout] = useState('1');
 
-  // Per-pane candle data (indexed by pane index)
-  const [paneCandles, setPaneCandles] = useState<Record<number, OHLCCandle[]>>({});
+  // Per-tab settings (split layout + pane timeframes)
+  const tabSettingsRef = useRef<Record<string, TabSettings>>({});
+  const [splitLayout, setSplitLayout] = useState('1');
   const [paneTimeframes, setPaneTimeframes] = useState<number[]>([60]);
+
+  // Per-pane candle data
+  const [paneCandles, setPaneCandles] = useState<Record<number, OHLCCandle[]>>({});
+
+  // Crosshair sync across panes
+  const [syncTime, setSyncTime] = useState<number | null>(null);
+  const syncSourceRef = useRef<string | null>(null);
 
   // Drawing state
   const [drawings, setDrawings] = useState<Drawing[]>([]);
@@ -62,21 +74,27 @@ export default function Home() {
   useEffect(() => { replayRef.current = replay; }, [replay]);
   useEffect(() => { dataSessionsRef.current = dataSessions; }, [dataSessions]);
 
-  // Load drawings on mount
-  useEffect(() => {
-    setDrawings(loadDrawings());
-  }, []);
+  useEffect(() => { setDrawings(loadDrawings()); }, []);
 
   const activeSessionId = dataSessions.activeSessionId ?? 'default';
 
   // Session index tracking
   const sessionIndexMap = useRef<Record<string, number>>({});
 
-  // When split layout changes, set default timeframes
-  useEffect(() => {
-    const tfs = DEFAULT_PANE_TIMEFRAMES[splitLayout] || [60];
+  // Save current tab settings before switching
+  const saveTabSettings = useCallback(() => {
+    const sid = dataSessionsRef.current.activeSessionId;
+    if (sid) {
+      tabSettingsRef.current[sid] = { splitLayout, paneTimeframes: [...paneTimeframes] };
+    }
+  }, [splitLayout, paneTimeframes]);
+
+  // Handle split layout change — save for current tab
+  const handleLayoutChange = useCallback((layout: string) => {
+    setSplitLayout(layout);
+    const tfs = DEFAULT_PANE_TFS[layout] || [60];
     setPaneTimeframes(tfs);
-  }, [splitLayout]);
+  }, []);
 
   // Load candles into DuckDB
   const loadSessionIntoDB = useCallback(async (candles: OHLCCandle[], restoreIndex?: number) => {
@@ -94,7 +112,7 @@ export default function Home() {
     }
   }, []);
 
-  // Handle CSV data loaded
+  // Handle CSV loaded
   const handleDataLoaded = useCallback(
     async (candles: OHLCCandle[], fileName?: string) => {
       const sessions = dataSessionsRef.current.sessions;
@@ -105,14 +123,28 @@ export default function Home() {
     [loadSessionIntoDB]
   );
 
-  // Tab switching
+  // Tab switching — save old settings, restore new tab's settings
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (dataSessions.activeSessionId === prevSessionIdRef.current) return;
+
+    // Save old tab's settings + replay index
     if (prevSessionIdRef.current) {
       sessionIndexMap.current[prevSessionIdRef.current] = replayRef.current.currentIndex;
+      tabSettingsRef.current[prevSessionIdRef.current] = {
+        splitLayout,
+        paneTimeframes: [...paneTimeframes],
+      };
     }
     prevSessionIdRef.current = dataSessions.activeSessionId;
+
+    // Restore new tab's settings
+    if (dataSessions.activeSessionId && tabSettingsRef.current[dataSessions.activeSessionId]) {
+      const saved = tabSettingsRef.current[dataSessions.activeSessionId];
+      setSplitLayout(saved.splitLayout);
+      setPaneTimeframes(saved.paneTimeframes);
+    }
+
     const session = dataSessions.activeSession;
     if (session && session.candles.length > 0) {
       const savedIndex = dataSessions.activeSessionId
@@ -120,11 +152,12 @@ export default function Home() {
         : 0;
       loadSessionIntoDB(session.candles, savedIndex);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSessions.activeSessionId, dataSessions.activeSession, loadSessionIntoDB]);
 
   const dataLoaded = dataSessions.activeSession !== null && !isInitializing;
 
-  // Query candles for each pane when timestamp or timeframes change
+  // Query candles for each pane
   useEffect(() => {
     if (!dataLoaded || replay.currentTimestamp === null) return;
     let cancelled = false;
@@ -133,33 +166,26 @@ export default function Home() {
       try {
         const conn = await getConnection();
         const results: Record<number, OHLCCandle[]> = {};
-
         for (let i = 0; i < paneTimeframes.length; i++) {
           const tf = paneTimeframes[i];
-          if (tf === 60) {
-            results[i] = await queryCandles(conn, replay.currentTimestamp!);
-          } else {
-            results[i] = await queryAggregatedCandles(conn, replay.currentTimestamp!, tf);
-          }
+          results[i] = tf === 60
+            ? await queryCandles(conn, replay.currentTimestamp!)
+            : await queryAggregatedCandles(conn, replay.currentTimestamp!, tf);
         }
-
-        if (!cancelled) {
-          setPaneCandles(results);
-        }
+        if (!cancelled) setPaneCandles(results);
       } catch (err) {
         console.error('Query error:', err);
       }
     })();
-
     return () => { cancelled = true; };
   }, [replay.currentTimestamp, paneTimeframes, dataLoaded]);
 
-  // Drawing handlers
+  // Drawing handlers — tool stays active (no auto-switch to cursor)
   const handleDrawingAdd = useCallback((drawing: Omit<Drawing, 'id'>) => {
     const full: Drawing = { ...drawing, id: generateDrawingId() };
     const updated = addDrawingToStore(full);
     setDrawings(updated);
-    setActiveTool('cursor');
+    // Don't auto-switch to cursor — let user keep drawing
   }, []);
 
   const handleClearDrawings = useCallback(() => {
@@ -169,21 +195,22 @@ export default function Home() {
 
   // Tab handlers
   const handleTabClose = useCallback((id: string) => {
+    saveTabSettings();
     dataSessionsRef.current.removeSession(id);
-  }, []);
+  }, [saveTabSettings]);
 
   const handleTabSelect = useCallback((id: string) => {
+    saveTabSettings();
     dataSessionsRef.current.switchSession(id);
-  }, []);
+  }, [saveTabSettings]);
 
   const handleTabNew = useCallback(() => {
-    // Clone current session into a new tab
+    saveTabSettings();
     const current = dataSessionsRef.current.activeSession;
     if (current) {
-      const name = current.name + ' (copy)';
-      dataSessionsRef.current.addSession(name, current.candles);
+      dataSessionsRef.current.addSession(current.name + ' (copy)', current.candles);
     }
-  }, []);
+  }, [saveTabSettings]);
 
   // Pane timeframe change
   const handlePaneTimeframeChange = useCallback((paneIndex: number, tf: number) => {
@@ -194,12 +221,24 @@ export default function Home() {
     });
   }, []);
 
-  const replayContextValue = useMemo(() => replay, [replay]);
+  // Crosshair sync handler — when one pane moves, others follow
+  const handleCrosshairTime = useCallback((paneKey: string, time: number | null) => {
+    syncSourceRef.current = paneKey;
+    setSyncTime(time);
+  }, []);
 
-  // Calculate pane count
+  // Escape key to switch back to cursor
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActiveTool('cursor');
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  const replayContextValue = useMemo(() => replay, [replay]);
   const paneCount = splitLayout === '1' ? 1 : splitLayout === '1x2' ? 2 : 4;
 
-  // Grid style for split layout
   const gridStyle = useMemo(() => {
     switch (splitLayout) {
       case '1x2': return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr' };
@@ -211,7 +250,7 @@ export default function Home() {
   return (
     <ReplayContext.Provider value={replayContextValue}>
       <div className="app-layout-tv">
-        {/* ─── Left Drawing Toolbar (vertical, TradingView style) ──── */}
+        {/* Vertical Drawing Toolbar */}
         {dataLoaded && (
           <div className="left-toolbar">
             <DrawingToolbar
@@ -225,18 +264,17 @@ export default function Home() {
           </div>
         )}
 
-        {/* ─── Main Content ─────────────────────────────────────────── */}
         <div className="main-content">
           {/* Top Bar */}
           <div className="top-bar">
             <div className="top-bar-left">
               <span className="app-title">📈 ReplayTrader</span>
-              <span className="app-version-badge">v0.3</span>
+              <span className="app-version-badge">v0.3.1</span>
             </div>
             <div className="top-bar-center">
               <SplitLayoutSelector
                 layout={splitLayout}
-                onLayoutChange={setSplitLayout}
+                onLayoutChange={handleLayoutChange}
               />
             </div>
             <div className="top-bar-right">
@@ -253,36 +291,41 @@ export default function Home() {
             onNew={handleTabNew}
           />
 
-          {/* Charts Grid */}
+          {/* Chart Grid */}
           <div className="chart-grid" style={gridStyle}>
             {dataLoaded ? (
-              Array.from({ length: paneCount }).map((_, idx) => (
-                <div key={idx} className="chart-pane">
-                  <div className="pane-header">
-                    {[60, 300, 900, 3600, 14400, 86400].map(tf => (
-                      <button
-                        key={tf}
-                        className={`tf-btn ${paneTimeframes[idx] === tf ? 'active' : ''}`}
-                        onClick={() => handlePaneTimeframeChange(idx, tf)}
-                      >
-                        {TIMEFRAME_LABELS[tf]}
-                      </button>
-                    ))}
+              Array.from({ length: paneCount }).map((_, idx) => {
+                const paneKey = `pane-${idx}`;
+                return (
+                  <div key={paneKey} className="chart-pane">
+                    <div className="pane-header">
+                      {[60, 300, 900, 3600, 14400, 86400].map(tf => (
+                        <button
+                          key={tf}
+                          className={`tf-btn ${paneTimeframes[idx] === tf ? 'active' : ''}`}
+                          onClick={() => handlePaneTimeframeChange(idx, tf)}
+                        >
+                          {TIMEFRAME_LABELS[tf]}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="pane-chart">
+                      <Chart
+                        candles={paneCandles[idx] || []}
+                        autoFit={true}
+                        activeDrawingTool={activeTool}
+                        drawings={drawings}
+                        drawingColor={drawingColor}
+                        onDrawingAdd={handleDrawingAdd}
+                        sessionId={activeSessionId}
+                        paneId={paneKey}
+                        syncTimestamp={syncSourceRef.current !== paneKey ? syncTime : null}
+                        onCrosshairTime={(t) => handleCrosshairTime(paneKey, t)}
+                      />
+                    </div>
                   </div>
-                  <div className="pane-chart">
-                    <Chart
-                      candles={paneCandles[idx] || []}
-                      autoFit={true}
-                      activeDrawingTool={activeTool}
-                      drawings={drawings}
-                      drawingColor={drawingColor}
-                      onDrawingAdd={handleDrawingAdd}
-                      sessionId={activeSessionId}
-                      label={TIMEFRAME_LABELS[paneTimeframes[idx]] || '1m'}
-                    />
-                  </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="chart-placeholder">
                 <span className="placeholder-icon">📊</span>
