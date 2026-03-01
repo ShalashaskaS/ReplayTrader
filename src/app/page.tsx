@@ -4,9 +4,9 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import CsvUploader from '@/components/CsvUploader';
 import ReplayControls from '@/components/ReplayControls';
-import TimeframeSelector from '@/components/TimeframeSelector';
 import TabBar from '@/components/TabBar';
 import DrawingToolbar from '@/components/DrawingToolbar';
+import SplitLayoutSelector from '@/components/SplitLayoutSelector';
 import {
   useReplayEngine,
   ReplayContext,
@@ -27,40 +27,58 @@ import {
   generateDrawingId,
   clearSessionDrawings,
 } from '@/lib/drawingManager';
-import type { Drawing } from '@/components/Chart';
+import type { Drawing, DrawingTool } from '@/components/Chart';
 
-// Dynamic import for Chart (no SSR — depends on browser APIs)
 const Chart = dynamic(() => import('@/components/Chart'), { ssr: false });
+
+const TIMEFRAME_LABELS: Record<number, string> = {
+  60: '1m', 300: '5m', 900: '15m', 3600: '1H', 14400: '4H', 86400: '1D',
+};
+
+const DEFAULT_PANE_TIMEFRAMES: Record<string, number[]> = {
+  '1': [60],
+  '1x2': [60, 300],
+  '2x2': [60, 300, 3600, 86400],
+};
 
 export default function Home() {
   const replay = useReplayEngine();
   const dataSessions = useDataSessions();
-  const [visibleCandles, setVisibleCandles] = useState<OHLCCandle[]>([]);
-  const [timeframe, setTimeframe] = useState(60);
   const [isInitializing, setIsInitializing] = useState(false);
+  const [splitLayout, setSplitLayout] = useState('1');
+
+  // Per-pane candle data (indexed by pane index)
+  const [paneCandles, setPaneCandles] = useState<Record<number, OHLCCandle[]>>({});
+  const [paneTimeframes, setPaneTimeframes] = useState<number[]>([60]);
 
   // Drawing state
   const [drawings, setDrawings] = useState<Drawing[]>([]);
-  const [activeTool, setActiveTool] = useState<'cursor' | 'hline' | 'trendline' | 'eraser'>('cursor');
+  const [activeTool, setActiveTool] = useState<DrawingTool>('cursor');
   const [drawingColor, setDrawingColor] = useState('#f59e0b');
 
-  // Use refs to avoid stale closures in callbacks
+  // Refs to avoid stale closures
   const replayRef = useRef(replay);
   const dataSessionsRef = useRef(dataSessions);
   useEffect(() => { replayRef.current = replay; }, [replay]);
   useEffect(() => { dataSessionsRef.current = dataSessions; }, [dataSessions]);
 
-  // Load drawings from localStorage on mount
+  // Load drawings on mount
   useEffect(() => {
     setDrawings(loadDrawings());
   }, []);
 
   const activeSessionId = dataSessions.activeSessionId ?? 'default';
 
-  // Track replay index per session so tab switching preserves position
+  // Session index tracking
   const sessionIndexMap = useRef<Record<string, number>>({});
 
-  // Load candles into DuckDB and initialize replay
+  // When split layout changes, set default timeframes
+  useEffect(() => {
+    const tfs = DEFAULT_PANE_TIMEFRAMES[splitLayout] || [60];
+    setPaneTimeframes(tfs);
+  }, [splitLayout]);
+
+  // Load candles into DuckDB
   const loadSessionIntoDB = useCallback(async (candles: OHLCCandle[], restoreIndex?: number) => {
     setIsInitializing(true);
     try {
@@ -68,7 +86,6 @@ export default function Home() {
       await createHistoricalTable(conn);
       await insertCandles(conn, candles);
       const timestamps = await getAllTimestamps(conn);
-      // Pass restoreIndex directly to initialize to avoid timing issues
       replayRef.current.initialize(timestamps, restoreIndex);
     } catch (err) {
       console.error('Failed to initialize DuckDB:', err);
@@ -77,10 +94,9 @@ export default function Home() {
     }
   }, []);
 
-  // Handle CSV data loaded → create new session
+  // Handle CSV data loaded
   const handleDataLoaded = useCallback(
     async (candles: OHLCCandle[], fileName?: string) => {
-      // Use ref to get current sessions count
       const sessions = dataSessionsRef.current.sessions;
       const name = fileName || `Dataset ${sessions.length + 1}`;
       dataSessionsRef.current.addSession(name, candles);
@@ -89,21 +105,16 @@ export default function Home() {
     [loadSessionIntoDB]
   );
 
-  // When active session changes, save old index + reload new session's candles
+  // Tab switching
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    // Skip when it hasn't actually changed
     if (dataSessions.activeSessionId === prevSessionIdRef.current) return;
-
-    // Save current replay index for the OLD session before switching
     if (prevSessionIdRef.current) {
       sessionIndexMap.current[prevSessionIdRef.current] = replayRef.current.currentIndex;
     }
     prevSessionIdRef.current = dataSessions.activeSessionId;
-
     const session = dataSessions.activeSession;
     if (session && session.candles.length > 0) {
-      // Restore saved index for this session (or start at 0)
       const savedIndex = dataSessions.activeSessionId
         ? sessionIndexMap.current[dataSessions.activeSessionId] ?? 0
         : 0;
@@ -113,39 +124,35 @@ export default function Home() {
 
   const dataLoaded = dataSessions.activeSession !== null && !isInitializing;
 
-  // Query visible candles when currentTimestamp or timeframe changes
+  // Query candles for each pane when timestamp or timeframes change
   useEffect(() => {
     if (!dataLoaded || replay.currentTimestamp === null) return;
-
     let cancelled = false;
 
     (async () => {
       try {
         const conn = await getConnection();
-        let candles: OHLCCandle[];
+        const results: Record<number, OHLCCandle[]> = {};
 
-        if (timeframe === 60) {
-          candles = await queryCandles(conn, replay.currentTimestamp!);
-        } else {
-          candles = await queryAggregatedCandles(
-            conn,
-            replay.currentTimestamp!,
-            timeframe
-          );
+        for (let i = 0; i < paneTimeframes.length; i++) {
+          const tf = paneTimeframes[i];
+          if (tf === 60) {
+            results[i] = await queryCandles(conn, replay.currentTimestamp!);
+          } else {
+            results[i] = await queryAggregatedCandles(conn, replay.currentTimestamp!, tf);
+          }
         }
 
         if (!cancelled) {
-          setVisibleCandles(candles);
+          setPaneCandles(results);
         }
       } catch (err) {
         console.error('Query error:', err);
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [replay.currentTimestamp, timeframe, dataLoaded]);
+    return () => { cancelled = true; };
+  }, [replay.currentTimestamp, paneTimeframes, dataLoaded]);
 
   // Drawing handlers
   const handleDrawingAdd = useCallback((drawing: Omit<Drawing, 'id'>) => {
@@ -169,102 +176,72 @@ export default function Home() {
     dataSessionsRef.current.switchSession(id);
   }, []);
 
-  // Memoize the context value
+  const handleTabNew = useCallback(() => {
+    // Clone current session into a new tab
+    const current = dataSessionsRef.current.activeSession;
+    if (current) {
+      const name = current.name + ' (copy)';
+      dataSessionsRef.current.addSession(name, current.candles);
+    }
+  }, []);
+
+  // Pane timeframe change
+  const handlePaneTimeframeChange = useCallback((paneIndex: number, tf: number) => {
+    setPaneTimeframes(prev => {
+      const next = [...prev];
+      next[paneIndex] = tf;
+      return next;
+    });
+  }, []);
+
   const replayContextValue = useMemo(() => replay, [replay]);
+
+  // Calculate pane count
+  const paneCount = splitLayout === '1' ? 1 : splitLayout === '1x2' ? 2 : 4;
+
+  // Grid style for split layout
+  const gridStyle = useMemo(() => {
+    switch (splitLayout) {
+      case '1x2': return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr' };
+      case '2x2': return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' };
+      default: return { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' };
+    }
+  }, [splitLayout]);
 
   return (
     <ReplayContext.Provider value={replayContextValue}>
-      <div className="app-layout">
-        {/* ─── Sidebar ──────────────────────────────────────────── */}
-        <aside className="sidebar">
-          <div className="app-logo">
-            <span className="logo-icon">📈</span>
-            <h1>ReplayTrader</h1>
-            <span className="app-version">v0.2.1</span>
+      <div className="app-layout-tv">
+        {/* ─── Left Drawing Toolbar (vertical, TradingView style) ──── */}
+        {dataLoaded && (
+          <div className="left-toolbar">
+            <DrawingToolbar
+              activeTool={activeTool}
+              onToolSelect={setActiveTool}
+              activeColor={drawingColor}
+              onColorChange={setDrawingColor}
+              onClearAll={handleClearDrawings}
+              vertical
+            />
           </div>
+        )}
 
-          <CsvUploader onDataLoaded={handleDataLoaded} />
-
-          {isInitializing && (
-            <div className="upload-status success">
-              ⏳ Initializing DuckDB engine...
+        {/* ─── Main Content ─────────────────────────────────────────── */}
+        <div className="main-content">
+          {/* Top Bar */}
+          <div className="top-bar">
+            <div className="top-bar-left">
+              <span className="app-title">📈 ReplayTrader</span>
+              <span className="app-version-badge">v0.3</span>
             </div>
-          )}
-
-          {/* Drawing Tools */}
-          {dataLoaded && (
-            <div className="sidebar-section">
-              <h4 className="section-title">🖊️ Drawing Tools</h4>
-              <DrawingToolbar
-                activeTool={activeTool}
-                onToolSelect={setActiveTool}
-                activeColor={drawingColor}
-                onColorChange={setDrawingColor}
-                onClearAll={handleClearDrawings}
+            <div className="top-bar-center">
+              <SplitLayoutSelector
+                layout={splitLayout}
+                onLayoutChange={setSplitLayout}
               />
             </div>
-          )}
-
-          {/* Keyboard Shortcuts Help */}
-          <div className="sidebar-section">
-            <h4 className="section-title">⌨️ Shortcuts</h4>
-            <div className="keyboard-shortcuts">
-              <div className="shortcut-item">
-                <span>Forward 1</span>
-                <span className="shortcut-key">→</span>
-              </div>
-              <div className="shortcut-item">
-                <span>Back 1</span>
-                <span className="shortcut-key">←</span>
-              </div>
-              <div className="shortcut-item">
-                <span>Forward 10</span>
-                <span className="shortcut-key">Shift + →</span>
-              </div>
-              <div className="shortcut-item">
-                <span>Back 10</span>
-                <span className="shortcut-key">Shift + ←</span>
-              </div>
-              <div className="shortcut-item">
-                <span>Play / Pause</span>
-                <span className="shortcut-key">Space</span>
-              </div>
-              <div className="shortcut-item">
-                <span>Reset</span>
-                <span className="shortcut-key">Home</span>
-              </div>
+            <div className="top-bar-right">
+              <CsvUploader onDataLoaded={handleDataLoaded} />
             </div>
-          </div>
-
-          {/* Attribution */}
-          <div
-            style={{
-              marginTop: 'auto',
-              fontSize: '0.65rem',
-              color: 'var(--text-muted)',
-              lineHeight: 1.4,
-            }}
-          >
-            Charts by{' '}
-            <a
-              href="https://www.tradingview.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: 'var(--accent)' }}
-            >
-              TradingView
-            </a>
-            {' '}· Powered by DuckDB
-          </div>
-        </aside>
-
-        {/* ─── Main Chart Area ──────────────────────────────────── */}
-        <main className="main-area">
-          <div className="chart-header">
-            <TimeframeSelector
-              activeTimeframe={timeframe}
-              onSelect={setTimeframe}
-            />
           </div>
 
           {/* Tab Bar */}
@@ -273,20 +250,39 @@ export default function Home() {
             activeSessionId={dataSessions.activeSessionId}
             onSelect={handleTabSelect}
             onClose={handleTabClose}
-            onNew={() => {/* CsvUploader is always visible in sidebar */ }}
+            onNew={handleTabNew}
           />
 
-          <div className="chart-area">
+          {/* Charts Grid */}
+          <div className="chart-grid" style={gridStyle}>
             {dataLoaded ? (
-              <Chart
-                candles={visibleCandles}
-                autoFit={true}
-                activeDrawingTool={activeTool}
-                drawings={drawings}
-                drawingColor={drawingColor}
-                onDrawingAdd={handleDrawingAdd}
-                sessionId={activeSessionId}
-              />
+              Array.from({ length: paneCount }).map((_, idx) => (
+                <div key={idx} className="chart-pane">
+                  <div className="pane-header">
+                    {[60, 300, 900, 3600, 14400, 86400].map(tf => (
+                      <button
+                        key={tf}
+                        className={`tf-btn ${paneTimeframes[idx] === tf ? 'active' : ''}`}
+                        onClick={() => handlePaneTimeframeChange(idx, tf)}
+                      >
+                        {TIMEFRAME_LABELS[tf]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="pane-chart">
+                    <Chart
+                      candles={paneCandles[idx] || []}
+                      autoFit={true}
+                      activeDrawingTool={activeTool}
+                      drawings={drawings}
+                      drawingColor={drawingColor}
+                      onDrawingAdd={handleDrawingAdd}
+                      sessionId={activeSessionId}
+                      label={TIMEFRAME_LABELS[paneTimeframes[idx]] || '1m'}
+                    />
+                  </div>
+                </div>
+              ))
             ) : (
               <div className="chart-placeholder">
                 <span className="placeholder-icon">📊</span>
@@ -294,11 +290,13 @@ export default function Home() {
               </div>
             )}
           </div>
-        </main>
 
-        {/* ─── Bottom Controls ──────────────────────────────────── */}
-        <div className="controls-area">
-          <ReplayControls />
+          {/* Bottom Controls */}
+          {dataLoaded && (
+            <div className="controls-area">
+              <ReplayControls />
+            </div>
+          )}
         </div>
       </div>
     </ReplayContext.Provider>

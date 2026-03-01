@@ -1,20 +1,24 @@
 'use client';
 
+import type { DrawingTool } from './Chart';
+
 interface DrawingToolbarProps {
-    activeTool: 'cursor' | 'hline' | 'trendline' | 'eraser';
-    onToolSelect: (tool: 'cursor' | 'hline' | 'trendline' | 'eraser') => void;
+    activeTool: DrawingTool;
+    onToolSelect: (tool: DrawingTool) => void;
     activeColor: string;
     onColorChange: (color: string) => void;
     onClearAll: () => void;
+    vertical?: boolean;
 }
 
-const COLORS = ['#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#ffffff'];
+const COLORS = ['#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#ec4899', '#ffffff'];
 
-const TOOLS = [
-    { id: 'cursor' as const, icon: '↖', label: 'Select' },
-    { id: 'hline' as const, icon: '⎯', label: 'Horizontal Line' },
-    { id: 'trendline' as const, icon: '╱', label: 'Trend Line' },
-    { id: 'eraser' as const, icon: '🗑', label: 'Clear All Drawings' },
+const TOOLS: { id: DrawingTool; icon: string; label: string }[] = [
+    { id: 'cursor', icon: '↖', label: 'Select (Esc)' },
+    { id: 'hline', icon: '⎯', label: 'Horizontal Line' },
+    { id: 'trendline', icon: '╱', label: 'Trend Line' },
+    { id: 'rect', icon: '▭', label: 'Rectangle Zone' },
+    { id: 'eraser', icon: '🗑', label: 'Clear All' },
 ];
 
 export default function DrawingToolbar({
@@ -23,9 +27,10 @@ export default function DrawingToolbar({
     activeColor,
     onColorChange,
     onClearAll,
+    vertical = false,
 }: DrawingToolbarProps) {
     return (
-        <div className="drawing-toolbar" id="drawing-toolbar">
+        <div className={`drawing-toolbar ${vertical ? 'vertical' : ''}`} id="drawing-toolbar">
             {TOOLS.map((tool) => (
                 <button
                     key={tool.id}
@@ -43,7 +48,7 @@ export default function DrawingToolbar({
                     {tool.icon}
                 </button>
             ))}
-            <div className="drawing-color-picker">
+            <div className={`drawing-color-picker ${vertical ? 'vertical' : ''}`}>
                 {COLORS.map((c) => (
                     <button
                         key={c}
