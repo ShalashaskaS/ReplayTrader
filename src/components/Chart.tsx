@@ -143,6 +143,11 @@ export default function Chart({
                 const bars = (t - last.time) / interval;
                 const logical = (candles.length - 1) + bars;
                 return ts.logicalToCoordinate(logical as Logical);
+            } else if (t < candles[0].time) {
+                const interval = getInterval();
+                const bars = (candles[0].time - t) / interval;
+                const logical = -bars;
+                return ts.logicalToCoordinate(logical as Logical);
             }
         }
         return null;
@@ -157,12 +162,22 @@ export default function Chart({
         const logical = ts.coordinateToLogical(x);
         if (logical !== null && candles.length > 0) {
             const lastIdx = candles.length - 1;
+
+            // If dragging into the future
             if (logical > lastIdx) {
                 const interval = getInterval();
                 const bars = logical - lastIdx;
                 return candles[lastIdx].time + bars * interval;
-            } else if (logical >= 0) {
-                return candles[Math.max(0, Math.floor(logical))].time;
+            }
+            // If dragging into history before first candle
+            else if (logical < 0) {
+                const interval = getInterval();
+                const bars = Math.abs(logical);
+                return candles[0].time - bars * interval;
+            }
+            // Normal range inside available data
+            else {
+                return candles[Math.floor(logical)].time;
             }
         }
         return null;
@@ -372,13 +387,13 @@ export default function Chart({
         chart.subscribeCrosshairMove((param) => {
             if (isSyncingRef.current) return;
 
-            // Track mouse for live preview
             if (param.point) {
                 const price = candleSeries.coordinateToPrice(param.point.y);
-                if (price !== null) {
+                const time = xToTime(param.point.x);
+                if (price !== null && time !== null) {
                     mousePosRef.current = {
                         x: param.point.x, y: param.point.y,
-                        time: param.time ? (param.time as number) : 0, price: price
+                        time, price
                     };
                 }
             } else {
@@ -427,6 +442,7 @@ export default function Chart({
             if (!param.point || !candleSeriesRef.current) return;
 
             const tool = activeToolRef.current;
+            const hitPrice = candleSeries.coordinateToPrice(param.point.y);
 
             // --- HIT DETECTION FOR SELECTION ---
             if (tool === 'cursor') {
@@ -482,8 +498,8 @@ export default function Chart({
             if (tool !== 'hline' && tool !== 'trendline' && tool !== 'rect') return;
             if (!addFn) return;
 
-            const price = candleSeries.coordinateToPrice(param.point.y);
-            if (price === null) return;
+            const drawPrice = candleSeries.coordinateToPrice(param.point.y);
+            if (drawPrice === null) return;
 
             // Use mathematical interpolation to extract timestamp (works in future empty timeline space too)
             let time = xToTime(param.point.x);
@@ -492,12 +508,12 @@ export default function Chart({
             if (tool === 'hline') {
                 addFn({
                     type: 'hline',
-                    points: [{ time, price: price as number }],
+                    points: [{ time, price: drawPrice as number }],
                     color, sessionId: sid,
                 });
                 setSelectedDrawingId(null);
             } else if (tool === 'trendline' || tool === 'rect') {
-                const clickPt: DrawingPoint = { time, price: price as number };
+                const clickPt: DrawingPoint = { time, price: drawPrice as number };
 
                 if (!pendingPointRef.current) {
                     // Stage 1: Place anchor point
