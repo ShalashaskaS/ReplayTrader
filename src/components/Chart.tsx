@@ -18,6 +18,7 @@ import type { OHLCCandle } from '@/lib/queries';
 
 export interface DrawingPoint {
     time: number;
+    logical?: number;
     price: number;
 }
 
@@ -150,10 +151,12 @@ export default function Chart({
             const isSel = d.id === selId;
 
             if (d.type === 'trendline' && d.points.length === 2) {
-                const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
-                const y1 = series.priceToCoordinate(d.points[0].price);
-                const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
-                const y2 = series.priceToCoordinate(d.points[1].price);
+                const p1 = d.points[0], p2 = d.points[1];
+                let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
+                let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                const y1 = series.priceToCoordinate(p1.price);
+                const y2 = series.priceToCoordinate(p2.price);
+
                 if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
 
                 ctx.beginPath();
@@ -171,10 +174,12 @@ export default function Chart({
                     });
                 }
             } else if (d.type === 'rect' && d.points.length === 2) {
-                const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
-                const y1 = series.priceToCoordinate(d.points[0].price);
-                const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
-                const y2 = series.priceToCoordinate(d.points[1].price);
+                const p1 = d.points[0], p2 = d.points[1];
+                let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
+                let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                const y1 = series.priceToCoordinate(p1.price);
+                const y2 = series.priceToCoordinate(p2.price);
+
                 if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
 
                 const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
@@ -201,8 +206,9 @@ export default function Chart({
         // Render LIVE PREVIEW while drawing
         if (pendingPointRef.current && mousePosRef.current) {
             const tool = activeToolRef.current;
-            const px1 = timeScale.timeToCoordinate(pendingPointRef.current.time as Time);
-            const py1 = series.priceToCoordinate(pendingPointRef.current.price);
+            const pt = pendingPointRef.current;
+            const px1 = pt.logical !== undefined ? timeScale.logicalToCoordinate(pt.logical as any) : timeScale.timeToCoordinate(pt.time as Time);
+            const py1 = series.priceToCoordinate(pt.price);
             const px2 = mousePosRef.current.x; // use true mouse coordinate for fluid preview
             const py2 = mousePosRef.current.y;
 
@@ -395,19 +401,21 @@ export default function Chart({
                         const y = candleSeries.priceToCoordinate(d.points[0].price);
                         if (y !== null && Math.abs(py - y) <= HIT_TOLERANCE) { hitId = d.id; break; }
                     } else if (d.type === 'trendline' && d.points.length === 2) {
-                        const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
-                        const y1 = candleSeries.priceToCoordinate(d.points[0].price);
-                        const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
-                        const y2 = candleSeries.priceToCoordinate(d.points[1].price);
-                        if (x1 && y1 && x2 && y2) {
+                        const p1 = d.points[0], p2 = d.points[1];
+                        let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
+                        let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                        const y1 = candleSeries.priceToCoordinate(p1.price);
+                        const y2 = candleSeries.priceToCoordinate(p2.price);
+                        if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
                             if (distToSegment(px, py, x1, y1, x2, y2) <= HIT_TOLERANCE) { hitId = d.id; break; }
                         }
                     } else if (d.type === 'rect' && d.points.length === 2) {
-                        const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
-                        const y1 = candleSeries.priceToCoordinate(d.points[0].price);
-                        const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
-                        const y2 = candleSeries.priceToCoordinate(d.points[1].price);
-                        if (x1 && y1 && x2 && y2) {
+                        const p1 = d.points[0], p2 = d.points[1];
+                        let x1 = p1.logical !== undefined ? timeScale.logicalToCoordinate(p1.logical as any) : timeScale.timeToCoordinate(p1.time as Time);
+                        let x2 = p2.logical !== undefined ? timeScale.logicalToCoordinate(p2.logical as any) : timeScale.timeToCoordinate(p2.time as Time);
+                        const y1 = candleSeries.priceToCoordinate(p1.price);
+                        const y2 = candleSeries.priceToCoordinate(p2.price);
+                        if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
                             const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
                             const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
                             // hit if inside the rect or on border
@@ -431,21 +439,30 @@ export default function Chart({
             const price = candleSeries.coordinateToPrice(param.point.y);
             if (price === null) return;
 
+            // allow drawing beyond data by mapping physical coordinate to logical index
+            const logical = param.logical ?? chart.timeScale().coordinateToLogical(param.point.x);
             let time = param.time as number | undefined;
-            if (!time) {
+
+            if (!time && logical !== null) {
                 const ct = chart.timeScale().coordinateToTime(param.point.x);
-                if (ct !== null) time = ct as number;
+                if (ct !== null && typeof ct === 'number') {
+                    time = ct;
+                } else {
+                    time = 0; // fallback if true time extrapolation fails
+                }
             }
+
+            if (logical === null) return; // Completely out of bounds
 
             if (tool === 'hline') {
                 addFn({
                     type: 'hline',
-                    points: [{ time: time || 0, price: price as number }],
+                    points: [{ time: time || 0, logical: logical as number, price: price as number }],
                     color, sessionId: sid,
                 });
                 setSelectedDrawingId(null);
-            } else if ((tool === 'trendline' || tool === 'rect') && time) {
-                const clickPt: DrawingPoint = { time, price: price as number };
+            } else if ((tool === 'trendline' || tool === 'rect') && logical !== null) {
+                const clickPt: DrawingPoint = { time: time || 0, logical: logical as number, price: price as number };
 
                 if (!pendingPointRef.current) {
                     // Stage 1: Place anchor point
@@ -521,15 +538,26 @@ export default function Chart({
         }));
 
         try {
-            // Save current logical range before setting new data
+            // Save current logical range and data length before mutating series
             const currentRange = chartRef.current?.timeScale().getVisibleLogicalRange();
+            const prevDataLength = candleSeriesRef.current.data().length;
 
             candleSeriesRef.current.setData(candleData);
             volumeSeriesRef.current.setData(volumeData);
 
             // Restore logical range OR apply initial logical range OR autoFit on first render
             if (currentRange) {
-                chartRef.current?.timeScale().setVisibleLogicalRange(currentRange);
+                const addedBars = candleData.length - prevDataLength;
+                // If user was viewing the very latest candles (within 2 candles of edge), auto-scroll to track new data
+                if (addedBars > 0 && currentRange.to >= prevDataLength - 2) {
+                    chartRef.current?.timeScale().setVisibleLogicalRange({
+                        from: currentRange.from + addedBars,
+                        to: currentRange.to + addedBars,
+                    });
+                } else {
+                    // User was looking at history: keep viewport static
+                    chartRef.current?.timeScale().setVisibleLogicalRange(currentRange);
+                }
             } else if (isFirstRenderRef.current) {
                 if (initialLogicalRange) {
                     chartRef.current?.timeScale().setVisibleLogicalRange(initialLogicalRange);
