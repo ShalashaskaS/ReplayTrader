@@ -149,14 +149,19 @@ function arrowToCandles(table: any): OHLCCandle[] {
     const volCol = table.getChildAt(5);
 
     for (let i = 0; i < numRows; i++) {
-        candles.push({
-            time: Number(timeCol.get(i)),
-            open: Number(openCol.get(i)),
-            high: Number(highCol.get(i)),
-            low: Number(lowCol.get(i)),
-            close: Number(closeCol.get(i)),
-            volume: Number(volCol.get(i)),
-        });
+        const time = Number(timeCol.get(i));
+        const open = Number(openCol.get(i));
+        const high = Number(highCol.get(i));
+        const low = Number(lowCol.get(i));
+        const close = Number(closeCol.get(i));
+        const volume = Number(volCol.get(i)) || 0;
+
+        // Skip rows with invalid OHLC values
+        if (!isFinite(time) || !isFinite(open) || !isFinite(high) || !isFinite(low) || !isFinite(close)) {
+            continue;
+        }
+
+        candles.push({ time, open, high, low, close, volume });
     }
     return candles;
 }

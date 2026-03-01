@@ -46,3 +46,5 @@ next-env.d.ts
 # sample data
 /public/sample_data.csv
 /public/BTCUSDT-*.csv
+
+.vercel
