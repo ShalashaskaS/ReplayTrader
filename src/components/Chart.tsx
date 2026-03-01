@@ -39,10 +39,21 @@ interface ChartProps {
     drawings?: Drawing[];
     drawingColor?: string;
     onDrawingAdd?: (drawing: Omit<Drawing, 'id'>) => void;
+    onDrawingRemove?: (id: string) => void;
+    onDrawingUpdate?: (drawing: Drawing) => void;
     sessionId?: string;
     syncTimestamp?: number | null;
     onCrosshairTime?: (time: number | null) => void;
     paneId?: string;
+}
+
+// Helper: distance between point and line segment
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number) {
+    const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+    if (l2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
 }
 
 export default function Chart({
@@ -52,6 +63,8 @@ export default function Chart({
     drawings = [],
     drawingColor = '#f59e0b',
     onDrawingAdd,
+    onDrawingRemove,
+    onDrawingUpdate,
     sessionId = 'default',
     syncTimestamp,
     onCrosshairTime,
@@ -63,7 +76,7 @@ export default function Chart({
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const priceLinesRef = useRef<IPriceLine[]>([]);
-    const pendingPointRef = useRef<DrawingPoint | null>(null);
+
     const isSyncingRef = useRef(false);
 
     // OHLC info overlay state
@@ -72,22 +85,33 @@ export default function Chart({
         volume: number; change: number; changePercent: number; isUp: boolean;
     } | null>(null);
 
+    // Interactive Drawing Refs
+    const pendingPointRef = useRef<DrawingPoint | null>(null);
+    const mousePosRef = useRef<{ x: number, y: number, time: number, price: number } | null>(null);
+
+    // Selection State
+    const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+
     // Refs to avoid stale closures
     const activeToolRef = useRef(activeDrawingTool);
     const drawingColorRef = useRef(drawingColor);
     const onDrawingAddRef = useRef(onDrawingAdd);
+    const onDrawingRemoveRef = useRef(onDrawingRemove);
+    const onDrawingUpdateRef = useRef(onDrawingUpdate);
     const sessionIdRef = useRef(sessionId);
     const drawingsRef = useRef(drawings);
     const onCrosshairTimeRef = useRef(onCrosshairTime);
-    const paneIdRef = useRef(paneId);
+    const selectedDrawingIdRef = useRef(selectedDrawingId);
 
     useEffect(() => { activeToolRef.current = activeDrawingTool; }, [activeDrawingTool]);
     useEffect(() => { drawingColorRef.current = drawingColor; }, [drawingColor]);
     useEffect(() => { onDrawingAddRef.current = onDrawingAdd; }, [onDrawingAdd]);
+    useEffect(() => { onDrawingRemoveRef.current = onDrawingRemove; }, [onDrawingRemove]);
+    useEffect(() => { onDrawingUpdateRef.current = onDrawingUpdate; }, [onDrawingUpdate]);
     useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
     useEffect(() => { drawingsRef.current = drawings; }, [drawings]);
     useEffect(() => { onCrosshairTimeRef.current = onCrosshairTime; }, [onCrosshairTime]);
-    useEffect(() => { paneIdRef.current = paneId; }, [paneId]);
+    useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
 
     // Canvas drawing function
     const redrawCanvas = useCallback(() => {
@@ -111,8 +135,12 @@ export default function Chart({
         const sid = sessionIdRef.current;
         const allDrawings = drawingsRef.current.filter(d => d.sessionId === sid);
         const timeScale = chart.timeScale();
+        const selId = selectedDrawingIdRef.current;
 
+        // Render persisted drawings
         for (const d of allDrawings) {
+            const isSel = d.id === selId;
+
             if (d.type === 'trendline' && d.points.length === 2) {
                 const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
                 const y1 = series.priceToCoordinate(d.points[0].price);
@@ -122,18 +150,18 @@ export default function Chart({
 
                 ctx.beginPath();
                 ctx.strokeStyle = d.color;
-                ctx.lineWidth = 2;
+                ctx.lineWidth = isSel ? 3 : 2;
                 ctx.moveTo(x1, y1);
                 ctx.lineTo(x2, y2);
                 ctx.stroke();
 
-                // Small circles at endpoints
-                [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-                    ctx.fillStyle = d.color;
-                    ctx.fill();
-                });
+                if (isSel) {
+                    [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
+                        ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                        ctx.fillStyle = '#fff'; ctx.fill();
+                        ctx.lineWidth = 2; ctx.strokeStyle = d.color; ctx.stroke();
+                    });
+                }
             } else if (d.type === 'rect' && d.points.length === 2) {
                 const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
                 const y1 = series.priceToCoordinate(d.points[0].price);
@@ -141,33 +169,87 @@ export default function Chart({
                 const y2 = series.priceToCoordinate(d.points[1].price);
                 if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
 
-                ctx.fillStyle = d.color + '22';
-                ctx.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
-                ctx.strokeStyle = d.color;
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([]);
-                ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
-            }
-        }
+                const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+                const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
 
-        // Pending point indicator
-        if (pendingPointRef.current) {
-            const tool = activeToolRef.current;
-            if (tool === 'trendline' || tool === 'rect') {
-                const px = timeScale.timeToCoordinate(pendingPointRef.current.time as Time);
-                const py = series.priceToCoordinate(pendingPointRef.current.price);
-                if (px !== null && py !== null) {
-                    ctx.beginPath();
-                    ctx.arc(px, py, 5, 0, Math.PI * 2);
-                    ctx.fillStyle = drawingColorRef.current;
-                    ctx.fill();
-                    ctx.strokeStyle = '#fff';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
+                ctx.fillStyle = d.color + '22';
+                ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+
+                ctx.strokeStyle = d.color;
+                ctx.lineWidth = isSel ? 2.5 : 1.5;
+                ctx.setLineDash([]);
+                ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+                if (isSel) {
+                    [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
+                        ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+                        ctx.fillStyle = '#fff'; ctx.fill();
+                        ctx.lineWidth = 2; ctx.strokeStyle = d.color; ctx.stroke();
+                    });
                 }
             }
         }
+
+        // Render LIVE PREVIEW while drawing
+        if (pendingPointRef.current && mousePosRef.current) {
+            const tool = activeToolRef.current;
+            const px1 = timeScale.timeToCoordinate(pendingPointRef.current.time as Time);
+            const py1 = series.priceToCoordinate(pendingPointRef.current.price);
+            const px2 = mousePosRef.current.x; // use true mouse coordinate for fluid preview
+            const py2 = mousePosRef.current.y;
+
+            if (px1 !== null && py1 !== null) {
+                const color = drawingColorRef.current;
+
+                if (tool === 'trendline') {
+                    ctx.beginPath();
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 5]); // dashed for preview
+                    ctx.moveTo(px1, py1);
+                    ctx.lineTo(px2, py2);
+                    ctx.stroke();
+                    ctx.setLineDash([]); // reset
+                } else if (tool === 'rect') {
+                    const minX = Math.min(px1, px2), maxX = Math.max(px1, px2);
+                    const minY = Math.min(py1, py2), maxY = Math.max(py1, py2);
+
+                    ctx.fillStyle = color + '22';
+                    ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 1.5;
+                    ctx.setLineDash([5, 5]);
+                    ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+                    ctx.setLineDash([]); // reset
+                }
+
+                // pending point anchor
+                ctx.beginPath(); ctx.arc(px1, py1, 5, 0, Math.PI * 2);
+                ctx.fillStyle = color; ctx.fill();
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+            }
+        }
     }, []);
+
+    // Deselect / clear pending on Escape
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setSelectedDrawingId(null);
+                pendingPointRef.current = null;
+                redrawCanvas();
+            } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDrawingIdRef.current) {
+                const remFn = onDrawingRemoveRef.current;
+                if (remFn) {
+                    remFn(selectedDrawingIdRef.current);
+                    setSelectedDrawingId(null);
+                }
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [redrawCanvas]);
 
     // Initialize chart
     useEffect(() => {
@@ -196,6 +278,9 @@ export default function Chart({
                 timeVisible: true,
                 secondsVisible: false,
             },
+            handleScroll: {
+                pressedMouseMove: true,
+            }
         });
 
         const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -223,9 +308,23 @@ export default function Chart({
         });
         resizeObserver.observe(containerRef.current);
 
-        // Crosshair sync + OHLC info
+        // Crosshair sync + OHLC info + Live Preview Pos
         chart.subscribeCrosshairMove((param) => {
             if (isSyncingRef.current) return;
+
+            // Track mouse for live preview
+            if (param.point && param.time) {
+                const price = candleSeries.coordinateToPrice(param.point.y);
+                if (price !== null) {
+                    mousePosRef.current = {
+                        x: param.point.x, y: param.point.y,
+                        time: param.time as number, price: price
+                    };
+                }
+            } else {
+                mousePosRef.current = null;
+            }
+
             const fn = onCrosshairTimeRef.current;
             if (fn) {
                 fn(param.time ? (param.time as number) : null);
@@ -258,11 +357,57 @@ export default function Chart({
             requestAnimationFrame(redrawCanvas);
         });
 
-        // Click handler for drawings
+        // Click handler for drawings AND selection
         chart.subscribeClick((param) => {
             if (!param.point || !candleSeriesRef.current) return;
 
             const tool = activeToolRef.current;
+
+            // --- HIT DETECTION FOR SELECTION ---
+            if (tool === 'cursor') {
+                const px = param.point.x;
+                const py = param.point.y;
+                const timeScale = chart.timeScale();
+                const sid = sessionIdRef.current;
+                const allDrawings = drawingsRef.current.filter(d => d.sessionId === sid);
+
+                let hitId: string | null = null;
+                const HIT_TOLERANCE = 8; // pixels
+
+                // Reverse so top-most is hit first
+                for (let i = allDrawings.length - 1; i >= 0; i--) {
+                    const d = allDrawings[i];
+
+                    if (d.type === 'hline' && d.points.length > 0) {
+                        const y = candleSeries.priceToCoordinate(d.points[0].price);
+                        if (y !== null && Math.abs(py - y) <= HIT_TOLERANCE) { hitId = d.id; break; }
+                    } else if (d.type === 'trendline' && d.points.length === 2) {
+                        const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
+                        const y1 = candleSeries.priceToCoordinate(d.points[0].price);
+                        const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
+                        const y2 = candleSeries.priceToCoordinate(d.points[1].price);
+                        if (x1 && y1 && x2 && y2) {
+                            if (distToSegment(px, py, x1, y1, x2, y2) <= HIT_TOLERANCE) { hitId = d.id; break; }
+                        }
+                    } else if (d.type === 'rect' && d.points.length === 2) {
+                        const x1 = timeScale.timeToCoordinate(d.points[0].time as Time);
+                        const y1 = candleSeries.priceToCoordinate(d.points[0].price);
+                        const x2 = timeScale.timeToCoordinate(d.points[1].time as Time);
+                        const y2 = candleSeries.priceToCoordinate(d.points[1].price);
+                        if (x1 && y1 && x2 && y2) {
+                            const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+                            const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+                            // hit if inside the rect or on border
+                            if (px >= minX && px <= maxX && py >= minY && py <= maxY) { hitId = d.id; break; }
+                        }
+                    }
+                }
+                setSelectedDrawingId(hitId);
+                requestAnimationFrame(redrawCanvas);
+                return;
+            }
+
+            // --- DRAWING LOGIC ---
             const color = drawingColorRef.current;
             const addFn = onDrawingAddRef.current;
             const sid = sessionIdRef.current;
@@ -285,20 +430,24 @@ export default function Chart({
                     points: [{ time: time || 0, price: price as number }],
                     color, sessionId: sid,
                 });
-                // Don't switch to cursor — keep tool active
+                setSelectedDrawingId(null);
             } else if ((tool === 'trendline' || tool === 'rect') && time) {
-                const pt: DrawingPoint = { time, price: price as number };
+                const clickPt: DrawingPoint = { time, price: price as number };
+
                 if (!pendingPointRef.current) {
-                    pendingPointRef.current = pt;
+                    // Stage 1: Place anchor point
+                    pendingPointRef.current = clickPt;
+                    setSelectedDrawingId(null);
                     requestAnimationFrame(redrawCanvas);
                 } else {
+                    // Stage 2: Finish drawing
                     addFn({
                         type: tool,
-                        points: [pendingPointRef.current, pt],
+                        points: [pendingPointRef.current, clickPt],
                         color, sessionId: sid,
                     });
                     pendingPointRef.current = null;
-                    // Keep tool active for next drawing
+                    requestAnimationFrame(redrawCanvas);
                 }
             }
         });
@@ -375,6 +524,7 @@ export default function Chart({
     useEffect(() => {
         if (!candleSeriesRef.current) return;
         const series = candleSeriesRef.current;
+        const selId = selectedDrawingId;
 
         priceLinesRef.current.forEach(pl => {
             try { series.removePriceLine(pl); } catch { /* ok */ }
@@ -383,16 +533,17 @@ export default function Chart({
 
         const hlines = drawings.filter(d => d.type === 'hline' && d.sessionId === sessionId);
         hlines.forEach(d => {
+            const isSel = d.id === selId;
             const pl = series.createPriceLine({
                 price: d.points[0].price, color: d.color,
-                lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: '',
+                lineWidth: isSel ? 3 : 2, lineStyle: 2, axisLabelVisible: true, title: '',
             });
             priceLinesRef.current.push(pl);
         });
 
         // Always redraw canvas for trend lines and rects
         requestAnimationFrame(redrawCanvas);
-    }, [drawings, sessionId, redrawCanvas]);
+    }, [drawings, sessionId, selectedDrawingId, redrawCanvas]);
 
     const handleFitContent = useCallback(() => {
         chartRef.current?.timeScale().fitContent();
@@ -401,7 +552,7 @@ export default function Chart({
     const isDrawing = activeDrawingTool === 'hline' || activeDrawingTool === 'trendline' || activeDrawingTool === 'rect';
 
     return (
-        <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+        <div style={{ position: 'relative', width: '100%', height: '100%', outline: 'none' }} tabIndex={0}>
             {/* OHLC Info Overlay */}
             {ohlcInfo && (
                 <div className="ohlc-overlay">

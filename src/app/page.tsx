@@ -26,6 +26,7 @@ import {
   addDrawing as addDrawingToStore,
   generateDrawingId,
   clearSessionDrawings,
+  removeDrawing as removeDrawingFromStore,
 } from '@/lib/drawingManager';
 import type { Drawing, DrawingTool } from '@/components/Chart';
 
@@ -188,6 +189,11 @@ export default function Home() {
     // Don't auto-switch to cursor — let user keep drawing
   }, []);
 
+  const handleDrawingRemove = useCallback((id: string) => {
+    const updated = removeDrawingFromStore(id);
+    setDrawings(updated);
+  }, []);
+
   const handleClearDrawings = useCallback(() => {
     const updated = clearSessionDrawings(activeSessionId);
     setDrawings(updated);
@@ -317,6 +323,7 @@ export default function Home() {
                         drawings={drawings}
                         drawingColor={drawingColor}
                         onDrawingAdd={handleDrawingAdd}
+                        onDrawingRemove={handleDrawingRemove}
                         sessionId={activeSessionId}
                         paneId={paneKey}
                         syncTimestamp={syncSourceRef.current !== paneKey ? syncTime : null}
