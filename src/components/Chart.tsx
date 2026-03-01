@@ -125,61 +125,86 @@ export default function Chart({
     // Timeframe-agnostic mathematical extrapolation helpers
     const getInterval = useCallback(() => {
         if (candles.length >= 2) {
-            const diff = candles[candles.length - 1].time - candles[candles.length - 2].time;
-            if (diff > 0) return diff;
+            let minDiff = Infinity;
+            for (let i = 1; i < candles.length; i++) {
+                const d = candles[i].time - candles[i - 1].time;
+                if (d > 0 && d < minDiff) minDiff = d;
+            }
+            if (minDiff !== Infinity) return minDiff;
         }
         return 60;
     }, [candles]);
 
     const timeToX = useCallback((t: number) => {
-        if (!chartRef.current) return null;
+        if (!chartRef.current || candles.length === 0) return null;
         const ts = chartRef.current.timeScale();
-        let x = ts.timeToCoordinate(t as Time);
-        if (x !== null) return x;
-        if (candles.length > 0) {
-            const last = candles[candles.length - 1];
-            if (t > last.time) {
-                const interval = getInterval();
-                const bars = (t - last.time) / interval;
-                const logical = (candles.length - 1) + bars;
-                return ts.logicalToCoordinate(logical as Logical);
-            } else if (t < candles[0].time) {
-                const interval = getInterval();
-                const bars = (candles[0].time - t) / interval;
-                const logical = -bars;
-                return ts.logicalToCoordinate(logical as Logical);
+        const last = candles[candles.length - 1];
+
+        if (t > last.time || t < candles[0].time) {
+            const range = ts.getVisibleLogicalRange();
+            if (range) {
+                const width = ts.width();
+                const logicalDelta = range.to - range.from;
+                if (logicalDelta > 0) {
+                    const pxPerBar = width / logicalDelta;
+                    const interval = getInterval();
+
+                    if (t > last.time) {
+                        const barsPast = (t - last.time) / interval;
+                        const lastCoord = ts.logicalToCoordinate((candles.length - 1) as Logical);
+                        if (lastCoord !== null) return lastCoord + barsPast * pxPerBar;
+                    } else {
+                        const barsBefore = (candles[0].time - t) / interval;
+                        const firstCoord = ts.logicalToCoordinate(0 as Logical);
+                        if (firstCoord !== null) return firstCoord - barsBefore * pxPerBar;
+                    }
+                }
             }
         }
-        return null;
+
+        return ts.timeToCoordinate(t as Time);
     }, [candles, getInterval]);
 
     const xToTime = useCallback((x: number) => {
-        if (!chartRef.current) return null;
+        if (!chartRef.current || candles.length === 0) return null;
         const ts = chartRef.current.timeScale();
-        let t = ts.coordinateToTime(x);
+
+        const range = ts.getVisibleLogicalRange();
+        if (range) {
+            const width = ts.width();
+            const logicalDelta = range.to - range.from;
+            if (logicalDelta > 0) {
+                const pxPerBar = width / logicalDelta;
+                const xLast = ts.logicalToCoordinate((candles.length - 1) as Logical);
+                if (xLast !== null && x > xLast + pxPerBar * 0.5) {
+                    const bars = (x - xLast) / pxPerBar;
+                    return candles[candles.length - 1].time + bars * getInterval();
+                }
+                const xFirst = ts.logicalToCoordinate(0 as Logical);
+                if (xFirst !== null && x < xFirst - pxPerBar * 0.5) {
+                    const bars = (xFirst - x) / pxPerBar;
+                    return candles[0].time - bars * getInterval();
+                }
+            }
+        }
+
+        const t = ts.coordinateToTime(x);
         if (t !== null && typeof t === 'number') return t;
 
         const logical = ts.coordinateToLogical(x);
-        if (logical !== null && candles.length > 0) {
-            const lastIdx = candles.length - 1;
-
-            // If dragging into the future
-            if (logical > lastIdx) {
-                const interval = getInterval();
-                const bars = logical - lastIdx;
-                return candles[lastIdx].time + bars * interval;
+        if (logical !== null) {
+            // Fractional mapping for smoothness
+            const xStart = ts.logicalToCoordinate(Math.floor(logical) as Logical);
+            if (xStart !== null) {
+                const range = ts.getVisibleLogicalRange();
+                const pxPerBar = range ? ts.width() / (range.to - range.from) : 1;
+                const fractional = (x - xStart) / pxPerBar;
+                const baseIdx = Math.max(0, Math.min(candles.length - 1, Math.floor(logical)));
+                return candles[baseIdx].time + fractional * getInterval();
             }
-            // If dragging into history before first candle
-            else if (logical < 0) {
-                const interval = getInterval();
-                const bars = Math.abs(logical);
-                return candles[0].time - bars * interval;
-            }
-            // Normal range inside available data
-            else {
-                return candles[Math.floor(logical)].time;
-            }
+            return candles[Math.max(0, Math.min(candles.length - 1, Math.floor(logical)))].time;
         }
+
         return null;
     }, [candles, getInterval]);
 
