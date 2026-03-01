@@ -117,30 +117,34 @@ export default function Chart({
     useEffect(() => { onDrawingRemoveRef.current = onDrawingRemove; }, [onDrawingRemove]);
     useEffect(() => { onDrawingUpdateRef.current = onDrawingUpdate; }, [onDrawingUpdate]);
     useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+    const candlesRef = useRef(candles);
     useEffect(() => { drawingsRef.current = drawings; }, [drawings]);
+    useEffect(() => { candlesRef.current = candles; }, [candles]);
     useEffect(() => { onCrosshairTimeRef.current = onCrosshairTime; }, [onCrosshairTime]);
     useEffect(() => { selectedDrawingIdRef.current = selectedDrawingId; }, [selectedDrawingId]);
     useEffect(() => { onLogicalRangeChangeRef.current = onLogicalRangeChange; }, [onLogicalRangeChange]);
 
     // Timeframe-agnostic mathematical extrapolation helpers
     const getInterval = useCallback(() => {
-        if (candles.length >= 2) {
+        const c = candlesRef.current;
+        if (c.length >= 2) {
             let minDiff = Infinity;
-            for (let i = 1; i < candles.length; i++) {
-                const d = candles[i].time - candles[i - 1].time;
+            for (let i = 1; i < c.length; i++) {
+                const d = c[i].time - c[i - 1].time;
                 if (d > 0 && d < minDiff) minDiff = d;
             }
             if (minDiff !== Infinity) return minDiff;
         }
         return 60;
-    }, [candles]);
+    }, []);
 
     const timeToX = useCallback((t: number) => {
-        if (!chartRef.current || candles.length === 0) return null;
+        const c = candlesRef.current;
+        if (!chartRef.current || c.length === 0) return null;
         const ts = chartRef.current.timeScale();
-        const last = candles[candles.length - 1];
+        const last = c[c.length - 1];
 
-        if (t > last.time || t < candles[0].time) {
+        if (t > last.time || t < c[0].time) {
             const range = ts.getVisibleLogicalRange();
             if (range) {
                 const width = ts.width();
@@ -151,10 +155,10 @@ export default function Chart({
 
                     if (t > last.time) {
                         const barsPast = (t - last.time) / interval;
-                        const lastCoord = ts.logicalToCoordinate((candles.length - 1) as Logical);
+                        const lastCoord = ts.logicalToCoordinate((c.length - 1) as Logical);
                         if (lastCoord !== null) return lastCoord + barsPast * pxPerBar;
                     } else {
-                        const barsBefore = (candles[0].time - t) / interval;
+                        const barsBefore = (c[0].time - t) / interval;
                         const firstCoord = ts.logicalToCoordinate(0 as Logical);
                         if (firstCoord !== null) return firstCoord - barsBefore * pxPerBar;
                     }
@@ -163,10 +167,11 @@ export default function Chart({
         }
 
         return ts.timeToCoordinate(t as Time);
-    }, [candles, getInterval]);
+    }, [getInterval]);
 
     const xToTime = useCallback((x: number) => {
-        if (!chartRef.current || candles.length === 0) return null;
+        const c = candlesRef.current;
+        if (!chartRef.current || c.length === 0) return null;
         const ts = chartRef.current.timeScale();
 
         const range = ts.getVisibleLogicalRange();
@@ -175,15 +180,15 @@ export default function Chart({
             const logicalDelta = range.to - range.from;
             if (logicalDelta > 0) {
                 const pxPerBar = width / logicalDelta;
-                const xLast = ts.logicalToCoordinate((candles.length - 1) as Logical);
+                const xLast = ts.logicalToCoordinate((c.length - 1) as Logical);
                 if (xLast !== null && x > xLast + pxPerBar * 0.5) {
                     const bars = (x - xLast) / pxPerBar;
-                    return candles[candles.length - 1].time + bars * getInterval();
+                    return c[c.length - 1].time + bars * getInterval();
                 }
                 const xFirst = ts.logicalToCoordinate(0 as Logical);
                 if (xFirst !== null && x < xFirst - pxPerBar * 0.5) {
                     const bars = (xFirst - x) / pxPerBar;
-                    return candles[0].time - bars * getInterval();
+                    return c[0].time - bars * getInterval();
                 }
             }
         }
@@ -199,14 +204,14 @@ export default function Chart({
                 const range = ts.getVisibleLogicalRange();
                 const pxPerBar = range ? ts.width() / (range.to - range.from) : 1;
                 const fractional = (x - xStart) / pxPerBar;
-                const baseIdx = Math.max(0, Math.min(candles.length - 1, Math.floor(logical)));
-                return candles[baseIdx].time + fractional * getInterval();
+                const baseIdx = Math.max(0, Math.min(c.length - 1, Math.floor(logical)));
+                return c[baseIdx].time + fractional * getInterval();
             }
-            return candles[Math.max(0, Math.min(candles.length - 1, Math.floor(logical)))].time;
+            return c[Math.max(0, Math.min(c.length - 1, Math.floor(logical)))].time;
         }
 
         return null;
-    }, [candles, getInterval]);
+    }, [getInterval]);
 
     // Canvas drawing function
     const redrawCanvas = useCallback(() => {
