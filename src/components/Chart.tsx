@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import {
     createChart,
     CandlestickSeries,
@@ -65,6 +65,12 @@ export default function Chart({
     const priceLinesRef = useRef<IPriceLine[]>([]);
     const pendingPointRef = useRef<DrawingPoint | null>(null);
     const isSyncingRef = useRef(false);
+
+    // OHLC info overlay state
+    const [ohlcInfo, setOhlcInfo] = useState<{
+        open: number; high: number; low: number; close: number;
+        volume: number; change: number; changePercent: number; isUp: boolean;
+    } | null>(null);
 
     // Refs to avoid stale closures
     const activeToolRef = useRef(activeDrawingTool);
@@ -217,13 +223,33 @@ export default function Chart({
         });
         resizeObserver.observe(containerRef.current);
 
-        // Crosshair sync — emit time so other panes can follow
+        // Crosshair sync + OHLC info
         chart.subscribeCrosshairMove((param) => {
             if (isSyncingRef.current) return;
             const fn = onCrosshairTimeRef.current;
             if (fn) {
                 fn(param.time ? (param.time as number) : null);
             }
+
+            // Read OHLC data from the hovered candle
+            if (param.time && param.seriesData) {
+                const candleData = param.seriesData.get(candleSeries) as CandlestickData<Time> | undefined;
+                if (candleData && 'open' in candleData) {
+                    const change = candleData.close - candleData.open;
+                    const changePercent = candleData.open !== 0 ? (change / candleData.open) * 100 : 0;
+                    const volData = param.seriesData.get(volumeSeries) as HistogramData<Time> | undefined;
+                    setOhlcInfo({
+                        open: candleData.open, high: candleData.high,
+                        low: candleData.low, close: candleData.close,
+                        volume: volData && 'value' in volData ? volData.value : 0,
+                        change, changePercent,
+                        isUp: candleData.close >= candleData.open,
+                    });
+                }
+            } else {
+                setOhlcInfo(null);
+            }
+
             requestAnimationFrame(redrawCanvas);
         });
 
@@ -376,6 +402,25 @@ export default function Chart({
 
     return (
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+            {/* OHLC Info Overlay */}
+            {ohlcInfo && (
+                <div className="ohlc-overlay">
+                    <span className="ohlc-label">O</span>
+                    <span className={ohlcInfo.isUp ? 'ohlc-up' : 'ohlc-down'}>{ohlcInfo.open.toFixed(2)}</span>
+                    <span className="ohlc-label">H</span>
+                    <span className={ohlcInfo.isUp ? 'ohlc-up' : 'ohlc-down'}>{ohlcInfo.high.toFixed(2)}</span>
+                    <span className="ohlc-label">L</span>
+                    <span className={ohlcInfo.isUp ? 'ohlc-up' : 'ohlc-down'}>{ohlcInfo.low.toFixed(2)}</span>
+                    <span className="ohlc-label">C</span>
+                    <span className={ohlcInfo.isUp ? 'ohlc-up' : 'ohlc-down'}>{ohlcInfo.close.toFixed(2)}</span>
+                    <span className={`ohlc-change ${ohlcInfo.isUp ? 'ohlc-up' : 'ohlc-down'}`}>
+                        {ohlcInfo.change >= 0 ? '+' : ''}{ohlcInfo.change.toFixed(2)} ({ohlcInfo.changePercent >= 0 ? '+' : ''}{ohlcInfo.changePercent.toFixed(2)}%)
+                    </span>
+                    <span className="ohlc-sep">│</span>
+                    <span className="ohlc-label">Vol</span>
+                    <span className="ohlc-vol">{ohlcInfo.volume.toFixed(2)}</span>
+                </div>
+            )}
             <div
                 ref={containerRef}
                 style={{

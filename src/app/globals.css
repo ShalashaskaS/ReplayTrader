@@ -728,3 +728,50 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* ─── OHLC Info Overlay ─────────────────────────────────────────── */
+
+.ohlc-overlay {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1;
+  pointer-events: none;
+  background: rgba(10, 14, 23, 0.8);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+}
+
+.ohlc-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.ohlc-up {
+  color: #22c55e;
+}
+
+.ohlc-down {
+  color: #ef4444;
+}
+
+.ohlc-change {
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.ohlc-sep {
+  color: var(--border-light);
+  margin: 0 2px;
+}
+
+.ohlc-vol {
+  color: var(--text-secondary);
+}
